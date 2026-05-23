@@ -203,7 +203,7 @@ function Index() {
               <Building2 className="h-4 w-4" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold tracking-tight text-foreground">HelloTheo TenantOps</h1>
+              <h1 className="text-sm font-semibold tracking-tight text-foreground">PropertyIQ</h1>
               <p className="text-xs text-muted-foreground">AI-handled maintenance · live operations</p>
             </div>
           </div>
