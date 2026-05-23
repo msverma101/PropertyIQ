@@ -17,7 +17,7 @@ export const Route = createFileRoute("/")({
   component: Index,
   head: () => ({
     meta: [
-      { title: "HelloTheo TenantOps — Live maintenance dashboard" },
+      { title: "PropertyIQ — Live maintenance dashboard" },
       {
         name: "description",
         content:
