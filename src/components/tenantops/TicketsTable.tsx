@@ -1,4 +1,4 @@
-import { Search } from "lucide-react";
+import { Search, Check, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Ticket, Vendor, Priority, Category } from "@/lib/tenantops-data";
 import { CategoryBadge, PriorityBadge, StatusBadge } from "./badges";
@@ -8,8 +8,11 @@ const categories: (Category | "ALL")[] = ["ALL", "Plumbing", "Electrical", "Heat
 
 function fmtDate(iso: string) {
   const d = new Date(iso);
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
-    " · " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const month = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getUTCMonth()];
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${day} ${month} · ${hh}:${mm}`;
 }
 
 export function TicketsTable({
@@ -17,11 +20,15 @@ export function TicketsTable({
   vendors,
   onSelect,
   selectedId,
+  onApproveTicket,
+  onRejectTicket,
 }: {
   tickets: Ticket[];
   vendors: Vendor[];
   onSelect: (t: Ticket) => void;
   selectedId?: string;
+  onApproveTicket: (id: string) => void;
+  onRejectTicket: (id: string) => void;
 }) {
   const [q, setQ] = useState("");
   const [prio, setPrio] = useState<Priority | "ALL">("ALL");
@@ -70,6 +77,7 @@ export function TicketsTable({
               <Th>Status</Th>
               <Th>Vendor</Th>
               <Th>Created</Th>
+              <Th>Actions</Th>
             </tr>
           </thead>
           <tbody>
@@ -101,12 +109,34 @@ export function TicketsTable({
                   <Td><StatusBadge s={t.status} /></Td>
                   <Td className="text-foreground/80">{v?.name ?? <span className="text-muted-foreground">—</span>}</Td>
                   <Td className="text-xs text-muted-foreground">{fmtDate(t.createdAt)}</Td>
+                  <Td>
+                    {t.status === "PENDING_APPROVAL" ? (
+                      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => onApproveTicket(t.id)}
+                          className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground shadow-sm transition hover:opacity-95"
+                          aria-label="Approve ticket"
+                        >
+                          <Check className="h-3 w-3" /> Approve
+                        </button>
+                        <button
+                          onClick={() => onRejectTicket(t.id)}
+                          className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-foreground transition hover:bg-muted"
+                          aria-label="Reject ticket"
+                        >
+                          <X className="h-3 w-3" /> Reject
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </Td>
                 </tr>
               );
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                <td colSpan={8} className="px-4 py-10 text-center text-sm text-muted-foreground">
                   No tickets match your filters.
                 </td>
               </tr>

@@ -129,10 +129,7 @@ function Index() {
     setCall(IDLE);
   };
 
-  const onApprove = () => {
-    const id = approval.ticketId!;
-    setApproval({ open: false, ctx: null });
-    closeCall();
+  const approveTicket = useCallback((id: string) => {
     setTickets((prev) =>
       prev.map((t) =>
         t.id === id
@@ -165,26 +162,34 @@ function Index() {
         description: "QuickFix Berlin arrives 2–4 PM.",
       });
     }, 2000);
-  };
+  }, []);
 
-  const onReject = () => {
-    const id = approval.ticketId;
+  const rejectTicket = useCallback((id: string) => {
+    setTickets((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              status: "REJECTED",
+              timeline: [...t.timeline, { at: new Date().toISOString(), label: "Rejected by manager" }],
+            }
+          : t
+      )
+    );
+    toast("Dispatch rejected", { description: "Ticket marked as REJECTED." });
+  }, []);
+
+  const onApprove = () => {
+    const id = approval.ticketId!;
     setApproval({ open: false, ctx: null });
     closeCall();
-    if (id) {
-      setTickets((prev) =>
-        prev.map((t) =>
-          t.id === id
-            ? {
-                ...t,
-                status: "REJECTED",
-                timeline: [...t.timeline, { at: new Date().toISOString(), label: "Rejected by manager" }],
-              }
-            : t
-        )
-      );
-      toast("Dispatch rejected", { description: "Ticket marked as REJECTED." });
-    }
+    approveTicket(id);
+  };
+
+  const onCancel = () => {
+    setApproval({ open: false, ctx: null });
+    closeCall();
+    toast("Decision deferred", { description: "Ticket left in PENDING_APPROVAL for review." });
   };
 
   const selectedVendor = selected ? vendors.find((v) => v.id === selected.vendorId) : undefined;
@@ -226,11 +231,13 @@ function Index() {
             vendors={vendors}
             onSelect={setSelected}
             selectedId={selected?.id}
+            onApproveTicket={approveTicket}
+            onRejectTicket={rejectTicket}
           />
         </div>
       </main>
 
-      <ApprovalModal open={approval.open} ctx={approval.ctx} onApprove={onApprove} onReject={onReject} />
+      <ApprovalModal open={approval.open} ctx={approval.ctx} onApprove={onApprove} onCancel={onCancel} />
       <TicketDrawer
         ticket={selected}
         vendor={selectedVendor}

@@ -12,12 +12,12 @@ export function ApprovalModal({
   open,
   ctx,
   onApprove,
-  onReject,
+  onCancel,
 }: {
   open: boolean;
   ctx: ApprovalContext | null;
   onApprove: () => void;
-  onReject: () => void;
+  onCancel: () => void;
 }) {
   if (!open || !ctx) return null;
 
@@ -35,7 +35,7 @@ export function ApprovalModal({
             </div>
           </div>
           <button
-            onClick={onReject}
+            onClick={onCancel}
             className="rounded-md p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
             aria-label="Close"
           >
@@ -52,16 +52,16 @@ export function ApprovalModal({
           </p>
 
           <div className="rounded-lg border border-border bg-background/60 p-3 text-xs text-muted-foreground">
-            The AI agent will SMS the tenant with the confirmed arrival window once you approve.
+            Cancel keeps the ticket in <span className="font-medium">PENDING_APPROVAL</span> so you can decide from the ticket list. Approve dispatches the vendor immediately.
           </div>
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-border p-4">
           <button
-            onClick={onReject}
+            onClick={onCancel}
             className="rounded-md border border-border bg-background px-3.5 py-2 text-sm font-medium text-foreground transition hover:bg-muted"
           >
-            Reject
+            Cancel
           </button>
           <button
             onClick={onApprove}
