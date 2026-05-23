@@ -1,10 +1,13 @@
 import { Search, Check, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { Ticket, Vendor, Priority, Category } from "@/lib/tenantops-data";
+import type { Ticket, Vendor, Priority, Category, Status } from "@/lib/tenantops-data";
 import { CategoryBadge, PriorityBadge, StatusBadge } from "./badges";
 
 const priorities: (Priority | "ALL")[] = ["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"];
 const categories: (Category | "ALL")[] = ["ALL", "Plumbing", "Electrical", "Heating", "Locksmith", "Appliance"];
+const editablePriorities: Priority[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+const editableCategories: Category[] = ["Plumbing", "Electrical", "Heating", "Locksmith", "Appliance"];
+const editableStatuses: Status[] = ["NEW", "PENDING_APPROVAL", "APPROVED", "DISPATCHED", "RESOLVED", "CLOSED", "REJECTED"];
 
 function fmtDate(iso: string) {
   const d = new Date(iso);
@@ -22,6 +25,7 @@ export function TicketsTable({
   selectedId,
   onApproveTicket,
   onRejectTicket,
+  onUpdateTicket,
 }: {
   tickets: Ticket[];
   vendors: Vendor[];
@@ -29,6 +33,7 @@ export function TicketsTable({
   selectedId?: string;
   onApproveTicket: (id: string) => void;
   onRejectTicket: (id: string) => void;
+  onUpdateTicket: (id: string, patch: Partial<Ticket>) => void;
 }) {
   const [q, setQ] = useState("");
   const [prio, setPrio] = useState<Priority | "ALL">("ALL");
@@ -101,13 +106,46 @@ export function TicketsTable({
                   </Td>
                   <Td>
                     <div className="flex items-center gap-2">
-                      <CategoryBadge c={t.category} />
+                      <InlineEdit
+                        value={t.category}
+                        options={editableCategories}
+                        onChange={(v) => onUpdateTicket(t.id, { category: v as Category })}
+                        render={(v) => <CategoryBadge c={v as Category} />}
+                      />
                     </div>
                     <div className="mt-1 line-clamp-1 max-w-[360px] text-xs text-muted-foreground">{t.description}</div>
                   </Td>
-                  <Td><PriorityBadge p={t.priority} /></Td>
-                  <Td><StatusBadge s={t.status} /></Td>
-                  <Td className="text-foreground/80">{v?.name ?? <span className="text-muted-foreground">—</span>}</Td>
+                  <Td>
+                    <InlineEdit
+                      value={t.priority}
+                      options={editablePriorities}
+                      onChange={(val) => onUpdateTicket(t.id, { priority: val as Priority })}
+                      render={(val) => <PriorityBadge p={val as Priority} />}
+                    />
+                  </Td>
+                  <Td>
+                    <InlineEdit
+                      value={t.status}
+                      options={editableStatuses}
+                      onChange={(val) => onUpdateTicket(t.id, { status: val as Status })}
+                      render={(val) => <StatusBadge s={val as Status} />}
+                    />
+                  </Td>
+                  <Td className="text-foreground/80">
+                    <InlineEdit
+                      value={t.vendorId ?? ""}
+                      options={["", ...vendors.map((vv) => vv.id)]}
+                      labelFor={(id) => (id ? vendors.find((vv) => vv.id === id)?.name ?? id : "Unassigned")}
+                      onChange={(val) => onUpdateTicket(t.id, { vendorId: val || undefined })}
+                      render={(id) =>
+                        id ? (
+                          <span>{vendors.find((vv) => vv.id === id)?.name ?? id}</span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )
+                      }
+                    />
+                  </Td>
                   <Td className="text-xs text-muted-foreground">{fmtDate(t.createdAt)}</Td>
                   <Td>
                     {t.status === "PENDING_APPROVAL" ? (
