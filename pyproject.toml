@@ -1,0 +1,14 @@
+[project]
+name = "tv-ops"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiofiles>=25.1.0",
+    "aiosqlite>=0.22.1",
+    "fastapi>=0.136.1",
+    "fastmcp>=3.3.1",
+    "sqlmodel>=0.0.38",
+    "uvicorn>=0.47.0",
+]
