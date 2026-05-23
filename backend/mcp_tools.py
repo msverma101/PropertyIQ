@@ -55,6 +55,19 @@ async def read_context(
     
     resolved_prop = property_name or session_info.get("property_name")
     resolved_flat = flat_no or session_info.get("flat_no")
+    
+    if resolved_prop and resolved_flat:
+        await append_timeline_event(
+            property_name=resolved_prop,
+            flat_no=resolved_flat,
+            ticket_id=call_id,
+            event_type="read_context",
+            author="agent",
+            description="AI Agent invoked tool: 'read_context' to retrieve property and owner details."
+        )
+        # Broadcast changes to dashboard
+        await manager.broadcast(call_id, {"event": "context_update", "context": await read_master_context(resolved_prop, resolved_flat, call_id)})
+
     caller_name = session_info.get("caller_name", "Unknown Caller")
     caller_type = session_info.get("caller_type", "unknown")
     phone = session_info.get("phone")
@@ -279,7 +292,7 @@ async def update_master_context(
         await session.refresh(ticket)
         
         # Write to filesystem context store
-        event_desc = "Ticket created by AI agent." if is_new_ticket else "Ticket details updated by AI agent."
+        event_desc = "AI Agent invoked tool: 'update_master_context' - Ticket created." if is_new_ticket else "AI Agent invoked tool: 'update_master_context' - Ticket details updated."
         context = await append_timeline_event(
             property_name=resolved_prop,
             flat_no=resolved_flat,
@@ -304,10 +317,31 @@ async def update_master_context(
 
 
 @mcp.tool()
-async def search_vendors(category: str, zipcode: str) -> str:
+async def search_vendors(category: str, zipcode: str, call_id: Optional[str] = None) -> str:
     """
     Search SQLite DB for active maintenance vendors matching a service category and zipcode.
     """
+    # Resolve active call ID if not supplied
+    resolved_call_id = call_id
+    if not resolved_call_id and active_call_sessions:
+        resolved_call_id = list(active_call_sessions.keys())[0]
+        
+    if resolved_call_id:
+        session_info = active_call_sessions.get(resolved_call_id, {})
+        resolved_prop = session_info.get("property_name")
+        resolved_flat = session_info.get("flat_no")
+        if resolved_prop and resolved_flat:
+            context = await append_timeline_event(
+                property_name=resolved_prop,
+                flat_no=resolved_flat,
+                ticket_id=resolved_call_id,
+                event_type="search_vendors",
+                author="agent",
+                description=f"AI Agent invoked tool: 'search_vendors' for category '{category}' and zipcode '{zipcode}'."
+            )
+            # Broadcast update
+            await manager.broadcast(resolved_call_id, {"event": "context_update", "context": context})
+
     async with async_session_maker() as session:
         stmt = select(Vendor).where(Vendor.category == category.lower())
         result = await session.execute(stmt)
@@ -374,7 +408,7 @@ async def request_manager_approval(call_id: str, request_details: str) -> str:
                 ticket_id=ticket.id,
                 event_type="approval_request",
                 author="agent",
-                description=f"Authorization requested: {request_details}",
+                description=f"AI Agent invoked tool: 'request_manager_approval' - Authorization requested: {request_details}",
                 payload={"status": "PENDING_APPROVAL", "request_details": request_details}
             )
             # Broadcast update (for WebSocket subscribers)
@@ -592,7 +626,7 @@ async def send_notification_email(
             
         # Append timeline event to the master context
         cc_str = f" (CC: {', '.join(cc_emails)})" if cc_emails else ""
-        event_desc = f"Email sent to {recipient_type} {recipient_name} <{to_email}>{cc_str} with subject: '{subject}'"
+        event_desc = f"AI Agent invoked tool: 'send_notification_email' - Email sent to {recipient_type} {recipient_name} <{to_email}>{cc_str} with subject: '{subject}'"
         await append_timeline_event(
             property_name=prop.name,
             flat_no=ticket.flat_no,

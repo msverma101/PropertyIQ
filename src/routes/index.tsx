@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, useEffect } from "react";
 import { Sparkles, Building2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -7,6 +7,8 @@ import {
   tenants,
   vendors,
   type Ticket,
+  type Category,
+  type Priority,
 } from "@/lib/tenantops-data";
 import { LiveCallPanel, type LiveCallState } from "@/components/tenantops/LiveCallPanel";
 import { TicketsTable } from "@/components/tenantops/TicketsTable";
@@ -43,6 +45,159 @@ function Index() {
     timers.current.forEach((t) => clearTimeout(t));
     timers.current = [];
   };
+
+  async function fetchTickets() {
+    try {
+      const res = await fetch("http://localhost:8000/api/tickets");
+      if (res.ok) {
+        const data = await res.json();
+        const mapped = data.map((t: any) => ({
+          id: t.id,
+          tenantId: t.tenant_id || "unknown",
+          property: t.property_name || "Musterstraße 12",
+          flat: t.flat_no || "Unit",
+          category: (t.issue_category ? (t.issue_category.charAt(0).toUpperCase() + t.issue_category.slice(1)) : "Plumbing") as Category,
+          description: t.description || "",
+          priority: t.priority as Priority,
+          status: t.status as Status,
+          vendorId: t.vendor_id || undefined,
+          createdAt: t.created_at || new Date().toISOString(),
+          timeline: []
+        }));
+        setTickets(mapped);
+      }
+    } catch (err) {
+      console.error("Failed to fetch tickets", err);
+    }
+  }
+
+  async function handleSelectTicket(ticket: Ticket | null) {
+    if (!ticket) {
+      setSelected(null);
+      return;
+    }
+    
+    setSelected(ticket);
+    
+    try {
+      const contextRes = await fetch(`http://localhost:8000/api/tickets/${ticket.id}/context`);
+      let timelineEvents = ticket.timeline;
+      let enrichedDetails = {};
+      if (contextRes.ok) {
+        const contextData = await contextRes.json();
+        timelineEvents = (contextData.timeline || []).map((e: any) => ({
+          at: e.timestamp,
+          label: e.description || e.type,
+          detail: e.author ? `By ${e.author}` : undefined
+        }));
+        
+        enrichedDetails = {
+          propertyDetails: contextData.property_details,
+          owners: contextData.owners,
+          tenantDetails: contextData.tenant_details,
+          updatedAt: contextData.updated_at
+        };
+      }
+
+      const transcriptRes = await fetch(`http://localhost:8000/api/tickets/${ticket.id}/transcript`);
+      let transcriptText = ticket.transcript;
+      if (transcriptRes.ok) {
+        const transcriptData = await transcriptRes.json();
+        transcriptText = transcriptData.transcript;
+      }
+
+      setSelected({
+        ...ticket,
+        timeline: timelineEvents,
+        transcript: transcriptText,
+        ...enrichedDetails
+      });
+    } catch (err) {
+      console.error("Failed to fetch ticket context/transcript", err);
+    }
+  }
+
+  useEffect(() => {
+    fetchTickets();
+
+    const ws = new WebSocket("ws://localhost:8000/api/ws/live");
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      console.log("WebSocket event received:", data);
+      
+      if (data.event === "call_start") {
+        setCall({
+          active: true,
+          step: 0,
+          tenant: {
+            id: data.caller_type === "tenant" ? "t1" : "unknown",
+            name: data.caller_name || "Guest",
+            initials: data.caller_name ? data.caller_name.split(" ").map((n: string) => n[0]).join("") : "G",
+            property: data.property_name || "Unknown",
+            flat: data.flat_no || "Unknown"
+          },
+          description: "",
+          confidence: 0
+        });
+        toast.info(`Inbound call connected: ${data.caller_name || "Guest"}`);
+      } else if (data.event === "context_update" || data.event === "approval_request" || data.event === "approval_response" || data.event === "approval_timeout") {
+        const ctx = data.context;
+        if (ctx) {
+          setCall((prev) => {
+            if (!prev.active) return prev;
+            
+            const priority = (ctx.priority || prev.priority) as Priority;
+            const category = (ctx.issue_category ? (ctx.issue_category.charAt(0).toUpperCase() + ctx.issue_category.slice(1)) : prev.category) as Category;
+            const description = ctx.description || prev.description;
+            
+            let step = prev.step || 0;
+            if (data.event === "context_update") step = 3;
+            if (data.event === "approval_request") step = 4;
+            
+            return {
+              ...prev,
+              step,
+              priority,
+              category,
+              description,
+              confidence: 96
+            };
+          });
+
+          fetchTickets();
+
+          if (data.event === "approval_request") {
+            setApproval({
+              open: true,
+              ticketId: ctx.ticket_id,
+              ctx: {
+                tenantName: ctx.caller_name || "Tenant",
+                category: ctx.issue_category || "Plumbing",
+                summary: ctx.description || "leak",
+                vendorName: "RohrBlitz Berlin",
+                estimate: 180
+              }
+            });
+          } else if (data.event === "approval_response" || data.event === "approval_timeout") {
+            setApproval({ open: false, ctx: null });
+            toast(`Manager Approval Status: ${ctx.status || "CLOSED"}`);
+          }
+        }
+      } else if (data.event === "call_end") {
+        setCall(IDLE);
+        toast.success("Call ended and transcript offloaded.");
+        fetchTickets();
+      }
+    };
+
+    ws.onclose = () => {
+      console.log("WebSocket disconnected. Retrying in 3s...");
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, [fetchTickets]);
 
   const simulate = useCallback(() => {
     if (call.active) return;
@@ -129,88 +284,97 @@ function Index() {
     setCall(IDLE);
   };
 
-  const approveTicket = useCallback((id: string) => {
-    setTickets((prev) =>
-      prev.map((t) =>
-        t.id === id
-          ? {
-              ...t,
-              status: "APPROVED",
-              vendorId: "v1",
-              timeline: [...t.timeline, { at: new Date().toISOString(), label: "Approved by manager" }],
-            }
-          : t
-      )
-    );
-    setTimeout(() => {
-      setTickets((prev) =>
-        prev.map((t) =>
-          t.id === id
-            ? {
-                ...t,
-                status: "DISPATCHED",
-                timeline: [
-                  ...t.timeline,
-                  { at: new Date().toISOString(), label: "Work order emailed", detail: "QuickFix Berlin" },
-                  { at: new Date().toISOString(), label: "Status → DISPATCHED" },
-                ],
-              }
-            : t
-        )
-      );
-      toast.success("SMS sent to tenant", {
-        description: "QuickFix Berlin arrives 2–4 PM.",
+  async function approveTicket(id: string) {
+    try {
+      const res = await fetch(`http://localhost:8000/api/manager/approve?call_id=${id}&status=APPROVED`, {
+        method: "POST"
       });
-    }, 2000);
-  }, []);
+      if (res.ok) {
+        toast.success("Ticket approved successfully.");
+        fetchTickets();
+        
+        setTimeout(() => {
+          fetchTickets();
+          toast.success("SMS sent to tenant", {
+            description: "Vendor dispatch confirmed.",
+          });
+        }, 2000);
+      } else {
+        toast.error("Failed to approve ticket on backend.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to connect to backend for approval.");
+    }
+  }
 
-  const rejectTicket = useCallback((id: string) => {
-    setTickets((prev) =>
-      prev.map((t) =>
-        t.id === id
-          ? {
-              ...t,
-              status: "REJECTED",
-              timeline: [...t.timeline, { at: new Date().toISOString(), label: "Rejected by manager" }],
-            }
-          : t
-      )
-    );
-    toast("Dispatch rejected", { description: "Ticket marked as REJECTED." });
-  }, []);
+  async function rejectTicket(id: string) {
+    try {
+      const res = await fetch(`http://localhost:8000/api/manager/approve?call_id=${id}&status=REJECTED`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        toast.success("Ticket rejected successfully.");
+        fetchTickets();
+      } else {
+        toast.error("Failed to reject ticket on backend.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to connect to backend for rejection.");
+    }
+  }
 
-  const updateTicket = useCallback((id: string, patch: Partial<Ticket>) => {
-    setTickets((prev) =>
-      prev.map((t) => {
-        if (t.id !== id) return t;
-        const changes = (Object.keys(patch) as (keyof Ticket)[])
-          .filter((k) => t[k] !== patch[k])
-          .map((k) => `${String(k)} → ${String(patch[k] ?? "—")}`);
-        if (changes.length === 0) return t;
-        return {
-          ...t,
-          ...patch,
-          timeline: [
-            ...t.timeline,
-            { at: new Date().toISOString(), label: "Edited by manager", detail: changes.join(", ") },
-          ],
-        };
-      })
-    );
-    toast("Ticket updated", { description: id });
-  }, []);
+  async function updateTicket(id: string, patch: Partial<Ticket>) {
+    try {
+      const res = await fetch(`http://localhost:8000/api/tickets/${id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(patch)
+      });
+      if (res.ok) {
+        toast.success("Ticket updated successfully.");
+        fetchTickets();
+        
+        if (selected && selected.id === id) {
+          handleSelectTicket({ ...selected, ...patch });
+        }
+      } else {
+        toast.error("Failed to update ticket on backend.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to connect to backend to update ticket.");
+    }
+  }
 
-  const onApprove = () => {
+  const onApprove = async () => {
     const id = approval.ticketId!;
     setApproval({ open: false, ctx: null });
     closeCall();
-    approveTicket(id);
+    await approveTicket(id);
   };
 
-  const onCancel = () => {
+  const onCancel = async () => {
+    const id = approval.ticketId!;
     setApproval({ open: false, ctx: null });
     closeCall();
-    toast("Decision deferred", { description: "Ticket left in PENDING_APPROVAL for review." });
+    try {
+      const res = await fetch(`http://localhost:8000/api/manager/approve?call_id=${id}&status=REJECTED`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        toast("Decision deferred", { description: "Ticket marked as REJECTED." });
+        fetchTickets();
+      } else {
+        toast.error("Failed to reject ticket on backend.");
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to connect to backend to reject.");
+    }
   };
 
   const selectedVendor = selected ? vendors.find((v) => v.id === selected.vendorId) : undefined;
@@ -228,19 +392,11 @@ function Index() {
               <p className="text-xs text-muted-foreground">AI-handled maintenance · live operations</p>
             </div>
           </div>
-          <button
-            onClick={simulate}
-            disabled={call.active}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Sparkles className="h-4 w-4" />
-            Simulate incoming call
-          </button>
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl space-y-6 px-6 py-8">
-        <LiveCallPanel state={call} onSimulate={simulate} />
+        <LiveCallPanel state={call} />
 
         <div>
           <div className="mb-3 flex items-baseline justify-between">
@@ -250,7 +406,7 @@ function Index() {
           <TicketsTable
             tickets={tickets}
             vendors={vendors}
-            onSelect={setSelected}
+            onSelect={handleSelectTicket}
             selectedId={selected?.id}
             onApproveTicket={approveTicket}
             onRejectTicket={rejectTicket}

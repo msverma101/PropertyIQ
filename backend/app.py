@@ -107,6 +107,15 @@ async def caller_lookup(phone: str, call_id: Optional[str] = None):
                         "owners": owners_list
                     }
                     
+                    await manager.broadcast(resolved_call_id, {
+                        "event": "call_start",
+                        "call_id": resolved_call_id,
+                        "caller_name": tenant.name,
+                        "caller_type": "tenant",
+                        "property_name": prop.name,
+                        "flat_no": flat.flat_no
+                    })
+                    
                     return {
                         "caller_found": True,
                         "caller_name": tenant.name,
@@ -143,6 +152,14 @@ async def caller_lookup(phone: str, call_id: Optional[str] = None):
                 "owner_id": owner.id,
                 "property_name": "Multiple Properties"
             }
+            await manager.broadcast(resolved_call_id, {
+                "event": "call_start",
+                "call_id": resolved_call_id,
+                "caller_name": owner.name,
+                "caller_type": "owner",
+                "property_name": "Multiple Properties",
+                "flat_no": None
+            })
             return {
                 "caller_found": True,
                 "caller_name": owner.name,
@@ -175,6 +192,14 @@ async def caller_lookup(phone: str, call_id: Optional[str] = None):
                 "vendor_id": vendor.id,
                 "vendor_category": vendor.category
             }
+            await manager.broadcast(resolved_call_id, {
+                "event": "call_start",
+                "call_id": resolved_call_id,
+                "caller_name": vendor.name,
+                "caller_type": "vendor",
+                "property_name": None,
+                "flat_no": None
+            })
             return {
                 "caller_found": True,
                 "caller_name": vendor.name,
@@ -201,6 +226,14 @@ async def caller_lookup(phone: str, call_id: Optional[str] = None):
             "caller_type": "unknown",
             "phone": phone
         }
+        await manager.broadcast(resolved_call_id, {
+            "event": "call_start",
+            "call_id": resolved_call_id,
+            "caller_name": "Guest",
+            "caller_type": "unknown",
+            "property_name": None,
+            "flat_no": None
+        })
         return {
             "caller_found": False,
             "caller_name": "Guest",
@@ -293,23 +326,237 @@ async def websocket_endpoint(websocket: WebSocket, call_id: str):
         manager.disconnect(call_id, websocket)
 
 
+@app.websocket("/api/ws/live")
+async def live_websocket_endpoint(websocket: WebSocket):
+    """WebSocket stream for dashboard to receive real-time updates of ALL active calls and operations."""
+    await manager.connect("all", websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect("all", websocket)
+
+
+@app.get("/api/calls/active")
+async def get_active_calls():
+    """Returns all active call sessions."""
+    return active_call_sessions
+
+
 @app.get("/api/tickets")
 async def get_tickets():
-    """Returns all tickets stored in SQLite DB."""
+    """Returns all tickets stored in SQLite DB with property details."""
     async with async_session_maker() as session:
-        stmt = select(Ticket).order_by(Ticket.updated_at.desc())
+        # Join Ticket and Property to fetch the property name
+        stmt = (
+            select(Ticket, Property.name)
+            .join(Property, Ticket.property_id == Property.id)
+            .order_by(Ticket.updated_at.desc())
+        )
         result = await session.execute(stmt)
-        tickets = result.scalars().all()
-        return tickets
+        tickets_with_prop = result.all()
+        
+        response_data = []
+        for ticket, prop_name in tickets_with_prop:
+            ticket_dict = ticket.dict()
+            ticket_dict["property_name"] = prop_name
+            response_data.append(ticket_dict)
+            
+        return response_data
+
+
+@app.patch("/api/tickets/{ticket_id}")
+async def update_ticket(ticket_id: str, patch_data: dict):
+    """
+    Updates a ticket's fields (status, priority, issue_category, vendor_id, description)
+    and logs a timeline event indicating what was modified.
+    """
+    async with async_session_maker() as session:
+        stmt = select(Ticket).where(Ticket.id == ticket_id)
+        result = await session.execute(stmt)
+        ticket = result.scalars().first()
+        
+        if not ticket:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
+            
+        changes = []
+        if "priority" in patch_data and patch_data["priority"] is not None:
+            old = ticket.priority
+            new = patch_data["priority"].upper()
+            if old != new:
+                ticket.priority = new
+                changes.append(f"priority: {old} -> {new}")
+                
+        if "category" in patch_data and patch_data["category"] is not None:
+            old = ticket.issue_category
+            new = patch_data["category"].lower()
+            if old != new:
+                ticket.issue_category = new
+                changes.append(f"category: {old} -> {new}")
+        elif "issue_category" in patch_data and patch_data["issue_category"] is not None:
+            old = ticket.issue_category
+            new = patch_data["issue_category"].lower()
+            if old != new:
+                ticket.issue_category = new
+                changes.append(f"category: {old} -> {new}")
+                
+        if "status" in patch_data and patch_data["status"] is not None:
+            old = ticket.status
+            new = patch_data["status"].upper()
+            if old != new:
+                ticket.status = new
+                changes.append(f"status: {old} -> {new}")
+                
+        if "vendorId" in patch_data:
+            old = ticket.vendor_id
+            new = patch_data["vendorId"]
+            if old != new:
+                ticket.vendor_id = new
+                changes.append(f"vendor: {old or 'None'} -> {new or 'None'}")
+        elif "vendor_id" in patch_data:
+            old = ticket.vendor_id
+            new = patch_data["vendor_id"]
+            if old != new:
+                ticket.vendor_id = new
+                changes.append(f"vendor: {old or 'None'} -> {new or 'None'}")
+                
+        if "description" in patch_data and patch_data["description"] is not None:
+            old = ticket.description
+            new = patch_data["description"]
+            if old != new:
+                ticket.description = new
+                changes.append("description updated")
+                
+        if changes:
+            ticket.updated_at = datetime.utcnow()
+            session.add(ticket)
+            
+            # Lookup property details to append to timeline SOT context file
+            prop_stmt = select(Property).where(Property.id == ticket.property_id)
+            prop_result = await session.execute(prop_stmt)
+            prop = prop_result.scalars().first()
+            
+            if prop:
+                change_desc = ", ".join(changes)
+                context = await append_timeline_event(
+                    property_name=prop.name,
+                    flat_no=ticket.flat_no,
+                    ticket_id=ticket.id,
+                    event_type="ticket_update",
+                    author="manager",
+                    description=f"Ticket details edited: {change_desc}",
+                    payload={
+                        "status": ticket.status,
+                        "priority": ticket.priority,
+                        "issue_category": ticket.issue_category,
+                        "description": ticket.description,
+                        "vendor_id": ticket.vendor_id,
+                        "changes": changes
+                    }
+                )
+                # Broadcast updated context to all websocket subscribers
+                await manager.broadcast(ticket_id, {"event": "context_update", "context": context})
+                
+        await session.commit()
+        return {"status": "success", "ticket_id": ticket_id}
 
 
 @app.get("/api/tickets/{ticket_id}/context")
-async def get_ticket_context(ticket_id: str, property_name: str, flat_no: str):
-    """Reads and returns the master context file directly from filesystem."""
-    context = await read_master_context(property_name, flat_no, ticket_id)
+async def get_ticket_context(ticket_id: str):
+    """Reads and returns the master context file directly from filesystem using ticket ID lookup, enriched with DB details."""
+    async with async_session_maker() as session:
+        ticket_stmt = select(Ticket).where(Ticket.id == ticket_id)
+        ticket_result = await session.execute(ticket_stmt)
+        ticket = ticket_result.scalars().first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found in database")
+            
+        prop_stmt = select(Property).where(Property.id == ticket.property_id)
+        prop_result = await session.execute(prop_stmt)
+        prop = prop_result.scalars().first()
+        if not prop:
+            raise HTTPException(status_code=404, detail=f"Property not found for ticket {ticket_id}")
+            
+        # Get owners
+        owner_link_stmt = select(Owner).join(PropertyOwnerLink).where(PropertyOwnerLink.property_id == prop.id)
+        owner_link_result = await session.execute(owner_link_stmt)
+        prop_owners = owner_link_result.scalars().all()
+        owners_list = [{"id": o.id, "name": o.name, "email": o.email, "phone": o.phone} for o in prop_owners]
+        
+        # Get tenant
+        tenant_details = None
+        if ticket.tenant_id:
+            tenant_stmt = select(Tenant).where(Tenant.id == ticket.tenant_id)
+            tenant_result = await session.execute(tenant_stmt)
+            tenant = tenant_result.scalars().first()
+            if tenant:
+                tenant_details = {
+                    "id": tenant.id,
+                    "name": tenant.name,
+                    "phone": tenant.phone,
+                    "email": tenant.email
+                }
+                
+    context = await read_master_context(prop.name, ticket.flat_no, ticket_id)
     if not context:
-        raise HTTPException(status_code=404, detail="Master context file not found")
+        # Fallback to creating a baseline
+        context = {
+            "ticket_id": ticket_id,
+            "property_name": prop.name,
+            "flat_no": ticket.flat_no,
+            "timeline": []
+        }
+        
+    # Enrich context
+    context["property_details"] = {
+        "id": prop.id,
+        "name": prop.name,
+        "address": prop.address,
+        "zipcode": prop.zipcode
+    }
+    context["owners"] = owners_list
+    context["tenant_details"] = tenant_details
+    context["created_at"] = ticket.created_at.isoformat() if ticket.created_at else None
+    context["updated_at"] = ticket.updated_at.isoformat() if ticket.updated_at else None
+    
     return context
+
+
+
+@app.get("/api/tickets/{ticket_id}/transcript")
+async def get_ticket_transcript(ticket_id: str):
+    """Reads and returns the call transcript text from the filesystem using ticket ID lookup."""
+    async with async_session_maker() as session:
+        ticket_stmt = select(Ticket).where(Ticket.id == ticket_id)
+        ticket_result = await session.execute(ticket_stmt)
+        ticket = ticket_result.scalars().first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found in database")
+            
+        prop_stmt = select(Property).where(Property.id == ticket.property_id)
+        prop_result = await session.execute(prop_stmt)
+        prop = prop_result.scalars().first()
+        if not prop:
+            raise HTTPException(status_code=404, detail=f"Property not found for ticket {ticket_id}")
+            
+    safe_prop = prop.name.replace(" ", "_").replace("/", "-").lower()
+    safe_flat = ticket.flat_no.replace(" ", "_").replace("/", "-").lower()
+    transcript_path = os.path.join(
+        CONTEXT_STORE_DIR, "properties", safe_prop, "flats", safe_flat, "tickets", f"ticket_{ticket_id}", f"call_{ticket_id}_transcript.txt"
+    )
+    
+    if not os.path.exists(transcript_path):
+        fallback_path = os.path.join(
+            CONTEXT_STORE_DIR, "properties", safe_prop, "flats", safe_flat, "tickets", f"ticket_{ticket_id}", f"call_mock_call_999_transcript.txt"
+        )
+        if os.path.exists(fallback_path):
+            transcript_path = fallback_path
+        else:
+            return {"transcript": "Transcript not available for this ticket."}
+            
+    async with aiofiles.open(transcript_path, "r", encoding="utf-8") as f:
+        content = await f.read()
+        return {"transcript": content}
 
 
 @app.post("/api/manager/approve")

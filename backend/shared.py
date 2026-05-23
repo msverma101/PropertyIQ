@@ -41,5 +41,11 @@ class ConnectionManager:
                     await connection.send_json(message)
                 except Exception:
                     pass
+        if call_id != "all" and "all" in self.active_connections:
+            for connection in self.active_connections["all"]:
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    pass
 
 manager = ConnectionManager()

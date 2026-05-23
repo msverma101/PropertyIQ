@@ -1,4 +1,4 @@
-import { PhoneCall, PhoneOff, Sparkles } from "lucide-react";
+import { PhoneCall, PhoneOff } from "lucide-react";
 import { Avatar, CategoryBadge, PriorityBadge } from "./badges";
 import type { Tenant, Category, Priority } from "@/lib/tenantops-data";
 
@@ -12,7 +12,7 @@ export interface LiveCallState {
   step: number; // 0..5
 }
 
-export function LiveCallPanel({ state, onSimulate }: { state: LiveCallState; onSimulate: () => void }) {
+export function LiveCallPanel({ state }: { state: LiveCallState }) {
   if (!state.active) {
     return (
       <section className="rounded-xl border border-border bg-card p-6">
@@ -26,13 +26,6 @@ export function LiveCallPanel({ state, onSimulate }: { state: LiveCallState; onS
               <p className="text-xs text-muted-foreground">The AI voice agent is on standby.</p>
             </div>
           </div>
-          <button
-            onClick={onSimulate}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:opacity-95"
-          >
-            <Sparkles className="h-4 w-4" />
-            Simulate incoming call
-          </button>
         </div>
       </section>
     );

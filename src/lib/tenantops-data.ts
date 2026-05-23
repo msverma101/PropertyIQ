@@ -44,7 +44,27 @@ export interface Ticket {
   createdAt: string;
   timeline: TimelineEvent[];
   transcript?: string;
+  propertyDetails?: {
+    id: string;
+    name: string;
+    address: string;
+    zipcode: string;
+  };
+  owners?: {
+    id: string;
+    name: string;
+    email: string;
+    phone: string;
+  }[];
+  tenantDetails?: {
+    id: string;
+    name: string;
+    phone: string;
+    email: string;
+  };
+  updatedAt?: string;
 }
+
 
 export const tenants: Tenant[] = [
   { id: "t1", name: "Lisa Chen", initials: "LC", property: "Kastanienallee 12", flat: "Flat 3B" },
