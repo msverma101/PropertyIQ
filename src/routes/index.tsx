@@ -254,6 +254,7 @@ function Index() {
             selectedId={selected?.id}
             onApproveTicket={approveTicket}
             onRejectTicket={rejectTicket}
+            onUpdateTicket={updateTicket}
           />
         </div>
       </main>
