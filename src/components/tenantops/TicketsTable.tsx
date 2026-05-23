@@ -221,3 +221,38 @@ function Select({
     </label>
   );
 }
+
+function InlineEdit<T extends string>({
+  value,
+  options,
+  onChange,
+  render,
+  labelFor,
+}: {
+  value: T;
+  options: readonly T[];
+  onChange: (v: T) => void;
+  render: (v: T) => React.ReactNode;
+  labelFor?: (v: T) => string;
+}) {
+  return (
+    <div className="relative inline-block" onClick={(e) => e.stopPropagation()}>
+      <div className="pointer-events-none flex items-center gap-1">
+        {render(value)}
+        <span className="text-[10px] text-muted-foreground/60">▾</span>
+      </div>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+        className="absolute inset-0 cursor-pointer opacity-0"
+        aria-label="Edit"
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {labelFor ? labelFor(o) : o}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
