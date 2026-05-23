@@ -61,7 +61,8 @@ export const vendors: Vendor[] = [
   { id: "v4", name: "Schlüssel24", trade: "Locksmith", eta: "Within 1h", estimate: 140 },
 ];
 
-const now = Date.now();
+// Stable base timestamp so SSR and client render the same dates (avoids hydration mismatch).
+const now = Date.parse("2026-05-23T12:00:00Z");
 const ago = (h: number) => new Date(now - h * 3600_000).toISOString();
 
 export const seedTickets: Ticket[] = [
