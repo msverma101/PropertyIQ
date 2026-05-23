@@ -179,6 +179,27 @@ function Index() {
     toast("Dispatch rejected", { description: "Ticket marked as REJECTED." });
   }, []);
 
+  const updateTicket = useCallback((id: string, patch: Partial<Ticket>) => {
+    setTickets((prev) =>
+      prev.map((t) => {
+        if (t.id !== id) return t;
+        const changes = (Object.keys(patch) as (keyof Ticket)[])
+          .filter((k) => t[k] !== patch[k])
+          .map((k) => `${String(k)} → ${String(patch[k] ?? "—")}`);
+        if (changes.length === 0) return t;
+        return {
+          ...t,
+          ...patch,
+          timeline: [
+            ...t.timeline,
+            { at: new Date().toISOString(), label: "Edited by manager", detail: changes.join(", ") },
+          ],
+        };
+      })
+    );
+    toast("Ticket updated", { description: id });
+  }, []);
+
   const onApprove = () => {
     const id = approval.ticketId!;
     setApproval({ open: false, ctx: null });
