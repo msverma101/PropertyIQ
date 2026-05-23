@@ -17,7 +17,7 @@ export const Route = createFileRoute("/")({
   component: Index,
   head: () => ({
     meta: [
-      { title: "HelloTheo TenantOps — Live maintenance dashboard" },
+      { title: "PropertyIQ — Live maintenance dashboard" },
       {
         name: "description",
         content:
@@ -179,6 +179,27 @@ function Index() {
     toast("Dispatch rejected", { description: "Ticket marked as REJECTED." });
   }, []);
 
+  const updateTicket = useCallback((id: string, patch: Partial<Ticket>) => {
+    setTickets((prev) =>
+      prev.map((t) => {
+        if (t.id !== id) return t;
+        const changes = (Object.keys(patch) as (keyof Ticket)[])
+          .filter((k) => t[k] !== patch[k])
+          .map((k) => `${String(k)} → ${String(patch[k] ?? "—")}`);
+        if (changes.length === 0) return t;
+        return {
+          ...t,
+          ...patch,
+          timeline: [
+            ...t.timeline,
+            { at: new Date().toISOString(), label: "Edited by manager", detail: changes.join(", ") },
+          ],
+        };
+      })
+    );
+    toast("Ticket updated", { description: id });
+  }, []);
+
   const onApprove = () => {
     const id = approval.ticketId!;
     setApproval({ open: false, ctx: null });
@@ -203,7 +224,7 @@ function Index() {
               <Building2 className="h-4 w-4" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold tracking-tight text-foreground">HelloTheo TenantOps</h1>
+              <h1 className="text-sm font-semibold tracking-tight text-foreground">PropertyIQ</h1>
               <p className="text-xs text-muted-foreground">AI-handled maintenance · live operations</p>
             </div>
           </div>
@@ -233,6 +254,7 @@ function Index() {
             selectedId={selected?.id}
             onApproveTicket={approveTicket}
             onRejectTicket={rejectTicket}
+            onUpdateTicket={updateTicket}
           />
         </div>
       </main>
