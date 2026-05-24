@@ -46,6 +46,11 @@ function Index() {
     dispatchVendorId?: string;
   }>({ open: false, ctx: null });
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const autoPoppedTickets = useRef<Set<string>>(new Set());
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Inject the ElevenLabs Convai widget script once on mount.
   useEffect(() => {
@@ -198,6 +203,54 @@ function Index() {
           } else if (data.event === "approval_response" || data.event === "approval_timeout") {
             setApproval({ open: false, ctx: null });
             toast(`Manager Approval Status: ${ctx.status || "CLOSED"}`);
+          } else if (data.event === "context_update") {
+            console.log("[autoPop] context_update received", {
+              ticket_id: ctx.ticket_id,
+              issue_category: ctx.issue_category,
+              description: ctx.description,
+              alreadyPopped: ctx.ticket_id ? autoPoppedTickets.current.has(ctx.ticket_id) : "n/a",
+            });
+            // Auto-pop the dispatch approval modal once the agent has captured a
+            // full ticket (ticket_id + issue_category + description). Guard against
+            // duplicate pops if the agent updates the same ticket twice.
+            if (
+              ctx.ticket_id &&
+              ctx.issue_category &&
+              ctx.description &&
+              !autoPoppedTickets.current.has(ctx.ticket_id)
+            ) {
+              console.log("[autoPop] all conditions met, scheduling openDispatchModal");
+              autoPoppedTickets.current.add(ctx.ticket_id);
+              // Reset the LiveCallPanel — the agent has captured enough; the call
+              // is effectively done from the dashboard's perspective.
+              setCall(IDLE);
+              const catLower = String(ctx.issue_category).toLowerCase();
+              const catCapitalized = catLower.charAt(0).toUpperCase() + catLower.slice(1);
+              // caller_name is in the most recent timeline entry's payload
+              const callerName: string | undefined =
+                ctx.caller_name
+                || (Array.isArray(ctx.timeline) && ctx.timeline.length
+                    ? ctx.timeline[ctx.timeline.length - 1]?.payload?.caller_name
+                    : undefined)
+                || undefined;
+              const stub: Ticket = {
+                id: ctx.ticket_id,
+                tenantId: "",
+                property: ctx.property_name || "",
+                flat: ctx.flat_no || "",
+                category: catCapitalized as Category,
+                description: ctx.description || "",
+                priority: (ctx.priority || "MEDIUM") as Priority,
+                status: (ctx.status || "NEW") as Status,
+                createdAt: new Date().toISOString(),
+                timeline: [],
+                ...(callerName
+                  ? { tenantDetails: { id: "", name: callerName, phone: "", email: "" } }
+                  : {}),
+              };
+              // Small delay so any concurrent state updates settle first.
+              setTimeout(() => openDispatchModal(stub), 800);
+            }
           }
         }
       } else if (data.event === "call_end") {
@@ -232,12 +285,20 @@ function Index() {
       } else if (data.event === "vendor_dispatch_complete") {
         const emailOk = data.email_status === "sent";
         if (emailOk && data.availability) {
-          toast.success(`Tenant notified — ${data.vendor_name} confirmed`, {
-            description: `Availability: ${data.availability}`,
+          toast.success(`Email sent to ${data.tenant_email || "tenant"}`, {
+            description: [
+              `Vendor: ${data.vendor_name}`,
+              `Availability: ${data.availability}`,
+              data.email_provider_id ? `Resend id: ${data.email_provider_id}` : null,
+            ]
+              .filter(Boolean)
+              .join("  |  "),
+            duration: 12000,
           });
         } else if (data.availability) {
           toast.warning(`Vendor confirmed but email failed`, {
             description: data.email_error || "Check Resend logs.",
+            duration: 12000,
           });
         } else {
           toast.error(`Vendor call ended without availability`, {
@@ -546,9 +607,13 @@ function Index() {
         onDispatch={(t) => openDispatchModal(t)}
       />
 
-      {/* ElevenLabs Convai widget — floating mic button, bottom-right. */}
-      {/* @ts-expect-error custom element from @elevenlabs/convai-widget-embed */}
-      <elevenlabs-convai agent-id={ELEVENLABS_AGENT_ID}></elevenlabs-convai>
+      {/* ElevenLabs Convai widget — floating mic button, bottom-right.
+          Only render after mount so SSR-rendered HTML stays empty
+          (avoids hydration mismatch with the custom element). */}
+      {mounted && (
+        // @ts-expect-error custom element from @elevenlabs/convai-widget-embed
+        <elevenlabs-convai agent-id={ELEVENLABS_AGENT_ID}></elevenlabs-convai>
+      )}
     </div>
   );
 }

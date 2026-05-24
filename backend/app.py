@@ -4,8 +4,12 @@ import asyncio
 import aiofiles
 import httpx
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from contextlib import asynccontextmanager
+
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -405,11 +409,36 @@ async def call_ended(call_id: str, payload: dict):
         elif not availability:
             email_error = "vendor did not capture availability"
 
+        # Append a separate timeline event for the email so it's visible in TicketDrawer.
+        if ticket_id:
+            email_event_desc = (
+                f"Confirmation email sent to {tenant_email}"
+                if email_status == "sent"
+                else f"Confirmation email NOT sent ({email_error or email_status})"
+            )
+            context = await append_timeline_event(
+                property_name=prop_name,
+                flat_no=flat_no,
+                ticket_id=ticket_id,
+                event_type="tenant_email_sent" if email_status == "sent" else "tenant_email_failed",
+                author="system",
+                description=email_event_desc,
+                payload={
+                    "tenant_email": tenant_email,
+                    "email_status": email_status,
+                    "email_provider_id": email_provider_id,
+                    "email_error": email_error,
+                    "vendor_name": vendor_name,
+                    "availability": availability,
+                },
+            )
+
         await manager.broadcast(call_id, {
             "event": "vendor_dispatch_complete",
             "ticket_id": ticket_id,
             "vendor_name": vendor_name,
             "availability": availability,
+            "tenant_email": tenant_email,
             "email_status": email_status,
             "email_provider_id": email_provider_id,
             "email_error": email_error,
