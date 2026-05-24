@@ -27,10 +27,20 @@ const statusStyles: Record<Status, string> = {
   REJECTED: "bg-[color:var(--status-critical-bg)] text-[color:var(--status-critical)]",
 };
 
+const statusLabels: Record<Status, string> = {
+  NEW: "NEW",
+  PENDING_APPROVAL: "PENDING APPROVAL",
+  APPROVED: "APPROVED",
+  DISPATCHED: "CONTACTED VENDOR",
+  RESOLVED: "RESOLVED",
+  CLOSED: "CLOSED",
+  REJECTED: "REJECTED",
+};
+
 export function StatusBadge({ s }: { s: Status }) {
   return (
     <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium ${statusStyles[s]}`}>
-      {s.replace("_", " ")}
+      {statusLabels[s]}
     </span>
   );
 }

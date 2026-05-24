@@ -47,12 +47,11 @@ dist-ssr
 *.sln
 *.sw?
 node_modules
-
-# Hackathon harness
-harness/
 .claude/
 .vite/
 
 # Environment and database
+.env
+.env.local
 backend/.env
 backend/db.sqlite

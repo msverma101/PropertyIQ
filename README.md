@@ -19,17 +19,79 @@ Rather than a simple conversational chatbot, **TenantOps** integrates a determin
 ## 🏗️ Architecture
 
 ```text
-       ElevenLabs Voice Agent / Phone Line
-                      │
-                      ▼
-               FastAPI Backend  ◄──►  SQLite (SQLModel)
-         (SSE FastMCP & WebSockets)
-                      │
-                      ├──────────────────────────┐
-                      ▼                          ▼
-               Vite Frontend             Physical Contexts
-            (TanStack Start UI)        (Properties & Timelines)
+┌─────────────┐         ┌──────────────────────┐         ┌──────────────────┐
+│   Browser   │ ─ WS ── │   Dashboard (React)   │ ─ HTTP─│  FastAPI Backend │
+│  (manager)  │         │   /  +  /call         │         │   (uvicorn)      │
+└─────────────┘         └──────────────────────┘         └────────┬─────────┘
+                                                                   │
+                                       MCP (SSE)  /mcp/sse  ◄──────┤
+                                       Outbound  POST /v1/convai/twilio/outbound-call  ─┐
+                                       Post-call POST /api/calls/ended  ◄───────────────┤
+                                                                                        │
+                              ┌─────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                    ┌──────────────────┐         ┌──────────┐         ┌─────────┐
+                    │   ElevenLabs     │ ─ PSTN─│  Twilio  │ ── ☎ ── │ Tenant /│
+                    │   ConvAI Agent   │         │  number  │         │ Vendor  │
+                    └──────────────────┘         └──────────┘         └─────────┘
 ```
+
+### MCP Tools (`backend/mcp_tools.py`)
+
+`lookup_tenant`  ·  `read_context`  ·  `update_master_context`  ·  `search_vendors`  ·  `request_manager_approval`  ·  `send_notification_email`
+
+### Flow 1 — Tenant Inbound
+
+```text
+Tenant ──► (/call widget OR Twilio #) ──► ElevenLabs agent
+                                                │
+                                                ▼
+                        ① lookup_tenant(name)              → seeds session, broadcasts call_start
+                        ② update_master_context(...)       → creates Ticket, broadcasts context_update
+                                                              → dashboard popup fires
+                                                │
+                                        call ends
+                                                │
+                                                ▼
+                        POST /api/calls/ended (body) ──► tenant branch
+                                                          • write call_<id>_transcript.txt
+                                                          • broadcast call_end
+```
+
+### Flow 2 — Vendor Outbound
+
+```text
+Manager clicks "Dispatch Vendor" ──► POST /api/tickets/<id>/dispatch-vendor
+                                                │
+                                                ▼
+                        backend ──► POST  ElevenLabs /v1/convai/twilio/outbound-call
+                                     (agent_id, phone_number_id, vendor #,
+                                      conversation_config_override = vendor prompt)
+                                                │
+                                                ▼
+                        ElevenLabs ──► Twilio outbound ──► Vendor's phone
+                                                │
+                                                ▼
+                        ③ update_master_context(status=DISPATCHED,
+                                                next_steps="<availability>")
+                                                │
+                                        call ends
+                                                │
+                                                ▼
+                        POST /api/calls/ended (body) ──► vendor branch
+                                                          • read next_steps → availability
+                                                          • send_email(tenant)  via Resend
+                                                          • broadcast vendor_dispatch_complete
+                                                          • dashboard toast w/ email + Resend id
+```
+
+### ElevenLabs Integration Points
+
+1. **Audio in** — browser widget (`<elevenlabs-convai>` on `/call`) **or** Twilio number assigned to the agent.
+2. **MCP server** — backend exposes `/mcp/sse`; agent invokes tools live during the call.
+3. **Outbound calls** — backend triggers them via ElevenLabs REST (`/v1/convai/twilio/outbound-call`); Twilio is invisible.
+4. **Post-call webhook** — fixed URL `/api/calls/ended`; body contains `conversation_id`; backend branches on `active_call_sessions[id].call_type`.
 
 ---
 

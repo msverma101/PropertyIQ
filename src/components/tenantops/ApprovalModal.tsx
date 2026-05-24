@@ -47,8 +47,7 @@ export function ApprovalModal({
           <p className="text-sm leading-relaxed text-foreground">
             Tenant <span className="font-medium">{ctx.tenantName}</span> reports an active{" "}
             <span className="font-medium">{ctx.summary}</span>. {ctx.category === "Plumbing" ? "Plumber" : "Vendor"}{" "}
-            <span className="font-medium">{ctx.vendorName}</span> available for dispatch. Est.{" "}
-            <span className="font-mono">€{ctx.estimate}</span>.
+            <span className="font-medium">{ctx.vendorName}</span> available for dispatch.
           </p>
 
           <div className="rounded-lg border border-border bg-background/60 p-3 text-xs text-muted-foreground">

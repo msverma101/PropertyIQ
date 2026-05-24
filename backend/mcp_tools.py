@@ -293,6 +293,28 @@ async def update_master_context(
         await session.refresh(ticket)
         
         # Write to filesystem context store
+
+        # Retroactively log the lookup_tenant tool call that happened before
+        # this tool created the ticket. session_info was seeded by lookup_tenant.
+        if is_new_ticket and session_info.get("tenant_id"):
+            await append_timeline_event(
+                property_name=resolved_prop,
+                flat_no=resolved_flat,
+                ticket_id=ticket.id,
+                event_type="tool_call",
+                author="agent",
+                description=(
+                    f"AI Agent invoked tool: 'lookup_tenant' - Identified "
+                    f"{session_info.get('caller_name')} at {session_info.get('property_name')} "
+                    f"flat {session_info.get('flat_no')}."
+                ),
+                payload={
+                    "tool": "lookup_tenant",
+                    "tenant_id": session_info.get("tenant_id"),
+                    "tenant_email": session_info.get("tenant_email"),
+                },
+            )
+
         event_desc = "AI Agent invoked tool: 'update_master_context' - Ticket created." if is_new_ticket else "AI Agent invoked tool: 'update_master_context' - Ticket details updated."
         context = await append_timeline_event(
             property_name=resolved_prop,
@@ -862,9 +884,5 @@ async def lookup_tenant(name: str, call_id: str) -> str:
             "flat_no": flat.flat_no,
             "address_line": address_line,
             "total_matches": len(matches),
-            "agent_hint": (
-                f"Confirm with the caller: 'I see you at {address_line}. Is that correct?' "
-                "Once they confirm, ask them to describe the maintenance issue. "
-                "Then call update_master_context with description, issue_category, and priority."
-            ),
+            "next_action": "Confirm address_line once with the caller, then ask about the issue and call update_master_context.",
         })

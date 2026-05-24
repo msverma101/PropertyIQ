@@ -98,7 +98,7 @@ export function TicketsTable({
                   }`}
                 >
                   <Td>
-                    <span className="font-mono text-xs text-foreground">{t.id}</span>
+                    <span className="font-mono text-xs text-foreground">#{t.id.slice(-4)}</span>
                   </Td>
                   <Td>
                     <div className="font-medium text-foreground">{t.property}</div>

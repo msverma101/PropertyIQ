@@ -5,8 +5,9 @@ import { toast } from "sonner";
 import {
   seedTickets,
   tenants,
-  vendors,
+  vendors as seedVendors,
   type Ticket,
+  type Vendor,
   type Category,
   type Priority,
   type Status,
@@ -32,11 +33,9 @@ export const Route = createFileRoute("/")({
 
 const IDLE: LiveCallState = { active: false, step: 0 };
 
-const ELEVENLABS_AGENT_ID = "agent_0601ksayj2zhf5dbdq6me1kvs7cf";
-const ELEVENLABS_WIDGET_SCRIPT = "https://unpkg.com/@elevenlabs/convai-widget-embed";
-
 function Index() {
   const [tickets, setTickets] = useState<Ticket[]>(seedTickets);
+  const [vendors, setVendors] = useState<Vendor[]>(seedVendors);
   const [call, setCall] = useState<LiveCallState>(IDLE);
   const [selected, setSelected] = useState<Ticket | null>(null);
   const [approval, setApproval] = useState<{
@@ -47,21 +46,6 @@ function Index() {
   }>({ open: false, ctx: null });
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const autoPoppedTickets = useRef<Set<string>>(new Set());
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  // Inject the ElevenLabs Convai widget script once on mount.
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    if (document.querySelector(`script[src="${ELEVENLABS_WIDGET_SCRIPT}"]`)) return;
-    const script = document.createElement("script");
-    script.src = ELEVENLABS_WIDGET_SCRIPT;
-    script.async = true;
-    script.type = "text/javascript";
-    document.body.appendChild(script);
-  }, []);
 
   const clearTimers = () => {
     timers.current.forEach((t) => clearTimeout(t));
@@ -141,6 +125,24 @@ function Index() {
 
   useEffect(() => {
     fetchTickets();
+
+    fetch("http://localhost:8000/api/vendors")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list: any[]) => {
+        if (!Array.isArray(list) || !list.length) return;
+        setVendors(
+          list.map((v) => ({
+            id: v.id,
+            name: v.name,
+            trade: (v.category
+              ? v.category.charAt(0).toUpperCase() + v.category.slice(1)
+              : "Plumbing") as Category,
+            eta: "TBD",
+            estimate: 0,
+          }))
+        );
+      })
+      .catch(() => {});
 
     const ws = new WebSocket("ws://localhost:8000/api/ws/live");
     ws.onmessage = (event) => {
@@ -255,7 +257,7 @@ function Index() {
         }
       } else if (data.event === "call_end") {
         setCall(IDLE);
-        toast.success("Call ended and transcript offloaded.");
+        toast.success("Call ended. Ticket created.");
         fetchTickets();
 
         // Auto-open the dispatch approval modal if the agent captured enough context.
@@ -293,7 +295,8 @@ function Index() {
             ]
               .filter(Boolean)
               .join("  |  "),
-            duration: 12000,
+            duration: Infinity,
+            closeButton: true,
           });
         } else if (data.availability) {
           toast.warning(`Vendor confirmed but email failed`, {
@@ -322,9 +325,9 @@ function Index() {
     if (call.active) return;
     clearTimers();
     const tenant = tenants[0]; // Lisa Chen
-    const vendor = vendors[0]; // QuickFix Berlin
+    const vendor = vendors.find((v) => v.trade === "Heating") || vendors[0];
     const fullDesc =
-      "Active leak under the kitchen sink — water pooling on the floor, shut-off valve not holding.";
+      "Heating stopped working overnight — radiators are cold across the whole flat, ambient is 12°C, and there's a young child in the unit.";
 
     // Step 0: call connects (idle metadata)
     setCall({ active: true, tenant, step: 0, confidence: 0 });
@@ -349,7 +352,7 @@ function Index() {
 
     // Step 2: category
     timers.current.push(
-      setTimeout(() => setCall((c) => ({ ...c, step: 2, category: "Plumbing" })), afterType + 500)
+      setTimeout(() => setCall((c) => ({ ...c, step: 2, category: "Heating" })), afterType + 500)
     );
     // Step 3: priority
     timers.current.push(
@@ -370,17 +373,17 @@ function Index() {
           tenantId: tenant.id,
           property: tenant.property,
           flat: tenant.flat,
-          category: "Plumbing",
+          category: "Heating",
           description: fullDesc,
           priority: "CRITICAL",
           status: "PENDING_APPROVAL",
           createdAt: now,
           timeline: [
             { at: now, label: "Call received", detail: `Tenant ${tenant.name} via AI line` },
-            { at: now, label: "AI categorized", detail: "Plumbing · CRITICAL (96%)" },
+            { at: now, label: "AI categorized", detail: "Heating · CRITICAL (96%)" },
             { at: now, label: "Pending manager approval" },
           ],
-          transcript: `Tenant: Hi, there's water everywhere under my kitchen sink.\nAI: I'm sorry to hear that. Have you been able to shut the water off?\nTenant: I tried the valve but it's still leaking...\nAI: Understood — I'm escalating this as critical and contacting a plumber now.`,
+          transcript: `Tenant: Hi, our heating stopped working overnight. The flat is freezing and I have a young child here.\nAI: I'm sorry to hear that. Is the boiler completely silent, or is it making any unusual noises?\nTenant: Completely silent — no error lights, nothing. The radiators are stone cold.\nAI: Understood. With a child in the unit and the cold weather, I'm marking this critical and getting a heating engineer out today.`,
         };
         setTickets((prev) => [newTicket, ...prev.filter((t) => t.id !== id)]);
         setApproval({
@@ -388,8 +391,8 @@ function Index() {
           ticketId: id,
           ctx: {
             tenantName: tenant.name,
-            category: "Plumbing",
-            summary: "kitchen leak",
+            category: "Heating",
+            summary: "no heat, child in flat",
             vendorName: vendor.name,
             estimate: vendor.estimate,
           },
@@ -606,14 +609,6 @@ function Index() {
         onClose={() => setSelected(null)}
         onDispatch={(t) => openDispatchModal(t)}
       />
-
-      {/* ElevenLabs Convai widget — floating mic button, bottom-right.
-          Only render after mount so SSR-rendered HTML stays empty
-          (avoids hydration mismatch with the custom element). */}
-      {mounted && (
-        // @ts-expect-error custom element from @elevenlabs/convai-widget-embed
-        <elevenlabs-convai agent-id={ELEVENLABS_AGENT_ID}></elevenlabs-convai>
-      )}
     </div>
   );
 }

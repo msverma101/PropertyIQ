@@ -1,5 +1,4 @@
-import { X, Phone, Bot, Mail, ArrowRightCircle, ChevronDown, Clock, Building } from "lucide-react";
-import { useState } from "react";
+import { X, Phone, Bot, Mail, ArrowRightCircle, Clock, Building, Wrench } from "lucide-react";
 import type { Ticket, Vendor } from "@/lib/tenantops-data";
 import { CategoryBadge, PriorityBadge, StatusBadge } from "./badges";
 
@@ -32,7 +31,6 @@ export function TicketDrawer({
   onClose: () => void;
   onDispatch?: (ticket: Ticket) => void;
 }) {
-  const [openTranscript, setOpenTranscript] = useState(true);
   if (!ticket) return null;
   const canDispatch =
     !!onDispatch &&
@@ -48,7 +46,7 @@ export function TicketDrawer({
         <div className="flex items-start justify-between gap-3 border-b border-border p-5">
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-mono text-xs font-semibold text-primary">{ticket.id}</span>
+              <span className="font-mono text-xs font-semibold text-primary">#{ticket.id.slice(-4)}</span>
               <span className="text-[10px] text-muted-foreground">·</span>
               <span className="text-[10px] text-muted-foreground flex items-center gap-1">
                 <Clock className="h-2.5 w-2.5" />
@@ -79,11 +77,6 @@ export function TicketDrawer({
           <div className="rounded-lg border border-border bg-background/60 p-4">
             <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Description</div>
             <p className="mt-1.5 text-sm leading-relaxed text-foreground">{ticket.description}</p>
-            {vendor && (
-              <div className="mt-3 border-t border-border pt-3 text-xs text-muted-foreground">
-                Vendor · <span className="text-foreground">{vendor.name}</span> · ETA {vendor.eta}
-              </div>
-            )}
           </div>
 
           {/* Property & Contacts */}
@@ -148,6 +141,42 @@ export function TicketDrawer({
             </div>
           </div>
 
+          {/* Matched Vendor */}
+          <div className="space-y-3">
+            <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Matched Vendor</div>
+            <div className="rounded-lg border border-border bg-background/60 p-4">
+              {vendor ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Wrench className="h-3.5 w-3.5 text-primary" />
+                    <span className="text-sm font-semibold text-foreground">{vendor.name}</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-semibold text-primary uppercase tracking-wider w-16 shrink-0">Trade</span>
+                      <span className="text-foreground">{vendor.trade}</span>
+                    </div>
+                    {vendor.eta && vendor.eta !== "TBD" && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-semibold text-primary uppercase tracking-wider w-16 shrink-0">ETA</span>
+                        <Clock className="h-3 w-3 text-muted-foreground/80" />
+                        <span>{vendor.eta}</span>
+                      </div>
+                    )}
+                    {vendor.estimate > 0 && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-semibold text-primary uppercase tracking-wider w-16 shrink-0">Estimate</span>
+                        <span className="text-foreground font-medium">€{vendor.estimate}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">No vendor matched yet.</div>
+              )}
+            </div>
+          </div>
+
           {/* Timeline */}
           <div>
             <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground font-semibold">Timeline & Background Actions</div>
@@ -165,21 +194,6 @@ export function TicketDrawer({
             </ol>
           </div>
 
-          {/* Call Transcript */}
-          <div className="rounded-lg border border-border overflow-hidden">
-            <button
-              onClick={() => setOpenTranscript((v) => !v)}
-              className="flex w-full items-center justify-between gap-2 bg-background/40 px-4 py-3 text-left text-sm font-semibold text-foreground"
-            >
-              <span>Call Transcript</span>
-              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${openTranscript ? "rotate-180" : ""}`} />
-            </button>
-            {openTranscript && (
-              <div className="border-t border-border bg-background/65 p-4 font-mono text-[11px] leading-relaxed text-foreground/85 whitespace-pre-line max-h-60 overflow-y-auto">
-                {ticket.transcript ?? "Transcript not available for this ticket."}
-              </div>
-            )}
-          </div>
         </div>
 
         {/* Footer */}
