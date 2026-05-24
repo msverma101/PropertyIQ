@@ -25,13 +25,20 @@ export function TicketDrawer({
   ticket,
   vendor,
   onClose,
+  onDispatch,
 }: {
   ticket: Ticket | null;
   vendor?: Vendor;
   onClose: () => void;
+  onDispatch?: (ticket: Ticket) => void;
 }) {
   const [openTranscript, setOpenTranscript] = useState(true);
   if (!ticket) return null;
+  const canDispatch =
+    !!onDispatch &&
+    ticket.status !== "DISPATCHED" &&
+    ticket.status !== "RESOLVED" &&
+    ticket.status !== "CLOSED";
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
@@ -176,6 +183,19 @@ export function TicketDrawer({
         </div>
 
         {/* Footer */}
+        {canDispatch && (
+          <div className="border-t border-border bg-muted/30 px-5 py-3 flex items-center justify-between gap-3">
+            <span className="text-[10px] text-muted-foreground">
+              Auto-picks the top vendor for {ticket.category}.
+            </span>
+            <button
+              onClick={() => onDispatch?.(ticket)}
+              className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition hover:opacity-95"
+            >
+              Dispatch Vendor
+            </button>
+          </div>
+        )}
         {ticket.updatedAt && (
           <div className="border-t border-border bg-muted/30 px-5 py-3 text-right text-[10px] text-muted-foreground">
             Last Updated: {fmt(ticket.updatedAt)}

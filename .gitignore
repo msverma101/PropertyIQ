@@ -46,3 +46,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+node_modules
+
+# Hackathon harness
+harness/
+.claude/
+.vite/
+
+# Environment and database
+backend/.env
+backend/db.sqlite

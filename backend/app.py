@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import aiofiles
+import httpx
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from contextlib import asynccontextmanager
@@ -30,6 +31,7 @@ from shared import (
     manager,
 )
 from mcp_tools import mcp
+from email_utils import send_email
 
 # FastAPI Lifespan and Instance
 @asynccontextmanager
@@ -60,19 +62,72 @@ app.mount("/mcp", mcp_app)
 # --- API Endpoints ---
 
 @app.get("/api/caller-lookup")
-async def caller_lookup(phone: str, call_id: Optional[str] = None):
+async def caller_lookup(phone: Optional[str] = None, call_id: Optional[str] = None):
     """
-    Called by ElevenLabs Twilio integration upon incoming call.
-    Resolves who is calling and returns dynamic greeting.
+    Pre-call webhook fired by ElevenLabs at the start of every conversation.
+    For PSTN inbound calls, `phone` is the caller-id and we resolve the tenant/owner/vendor.
+    For browser/web inbound calls, `phone` is empty — we fall through to the unknown-caller
+    branch, where the agent verbally asks the caller for their name and calls `lookup_tenant`.
     """
-    # Clean phone number (remove spaces and ensure '+' prefix)
-    phone = phone.strip()
+    # Clean phone number (remove spaces and ensure '+' prefix). Empty allowed for browser calls.
+    phone = (phone or "").strip()
     if phone and not phone.startswith("+"):
         phone = "+" + phone
     
     # Generate fallback call_id if not supplied
     resolved_call_id = call_id or f"call_{int(datetime.utcnow().timestamp())}"
     
+    # If no phone (browser/web call), skip DB lookups and go straight to the unknown branch.
+    if not phone:
+        active_call_sessions[resolved_call_id] = {
+            "caller_name": "Guest",
+            "caller_type": "unknown",
+            "phone": "",
+        }
+        await manager.broadcast(resolved_call_id, {
+            "event": "call_start",
+            "call_id": resolved_call_id,
+            "caller_name": "Guest",
+            "caller_type": "unknown",
+            "property_name": None,
+            "flat_no": None,
+        })
+        return {
+            "caller_found": False,
+            "caller_name": "Guest",
+            "caller_type": "unknown",
+            "call_id": resolved_call_id,
+            "dynamic_variables": {
+                "caller_name": "Guest",
+                "caller_type": "unknown",
+                "call_id": resolved_call_id,
+            },
+            "conversation_config_override": {
+                "agent": {
+                    "first_message": (
+                        "Hello, thank you for calling HelloTheo property management. "
+                        "May I have your full name please?"
+                    ),
+                    "prompt": {
+                        "prompt": (
+                            "You are HelloTheo's maintenance assistant. "
+                            "FIRST STEP: ask the caller for their full name. "
+                            "AS SOON AS they tell you their name, call the 'lookup_tenant' tool "
+                            "with arguments name=<their full name> and call_id=<the active call_id>. "
+                            "When lookup_tenant returns, read the 'agent_hint' field and follow it: "
+                            "confirm the address back to the caller ('I see you at <address_line>, is that correct?'). "
+                            "If they confirm, ask them to describe the maintenance issue in one or two sentences. "
+                            "Then call 'update_master_context' once with the call_id, description, "
+                            "an issue_category from {plumbing, hvac, electrical, locksmith, general}, "
+                            "and a priority from {LOW, MEDIUM, HIGH, CRITICAL}. "
+                            "If lookup_tenant returns status='no_match', politely ask the caller to spell "
+                            "their full name and try again. Keep the call under 90 seconds."
+                        )
+                    },
+                }
+            },
+        }
+
     async with async_session_maker() as session:
         # Check if tenant is calling
         tenant_stmt = select(Tenant).where(Tenant.phone == phone)
@@ -260,30 +315,137 @@ async def call_ended(call_id: str, payload: dict):
     """
     Webhook called by ElevenLabs when the call finishes.
     Receives final transcript and call summary, offloading it into the context store.
+
+    Branches on session_info["call_type"]:
+      - "vendor_dispatch": outbound vendor call ended; capture availability + email tenant.
+      - otherwise:        inbound tenant call ended; save transcript on the ticket.
     """
-    # 1. Retrieve session info
+    # 1. Retrieve session info (peek first so we can branch, then pop at the end)
+    session_info = active_call_sessions.get(call_id, {})
+
+    # === BRANCH: vendor outbound call ended ===
+    if session_info.get("call_type") == "vendor_dispatch":
+        ticket_id = session_info.get("ticket_id")
+        tenant_email = session_info.get("tenant_email")
+        vendor_name = session_info.get("vendor_name") or "the vendor"
+        prop_name = session_info.get("property_name") or "Unknown_Property"
+        flat_no = session_info.get("flat_no") or "Unknown_Flat"
+
+        # Save the vendor-call transcript next to the existing tenant-call one
+        safe_prop = prop_name.replace(" ", "_").replace("/", "-").lower()
+        safe_flat = flat_no.replace(" ", "_").replace("/", "-").lower()
+        ticket_dir = os.path.join(
+            CONTEXT_STORE_DIR, "properties", safe_prop, "flats", safe_flat,
+            "tickets", f"ticket_{ticket_id}"
+        )
+        os.makedirs(ticket_dir, exist_ok=True)
+
+        transcript_text = ""
+        history = payload.get("transcript", payload.get("history", []))
+        if isinstance(history, list):
+            for message in history:
+                role = message.get("role", "unknown")
+                text = message.get("message", message.get("text", ""))
+                transcript_text += f"[{role.upper()}]: {text}\n"
+        else:
+            transcript_text = str(history)
+
+        transcript_path = os.path.join(ticket_dir, f"call_{call_id}_vendor_transcript.txt")
+        async with aiofiles.open(transcript_path, "w", encoding="utf-8") as f:
+            await f.write(transcript_text)
+
+        # Read availability that the vendor agent wrote into master_context.next_steps
+        availability: Optional[str] = None
+        if prop_name != "Unknown_Property" and flat_no != "Unknown_Flat" and ticket_id:
+            ctx_data = await read_master_context(prop_name, flat_no, ticket_id)
+            if ctx_data:
+                availability = ctx_data.get("next_steps") or ctx_data.get("suggestions")
+
+        summary = payload.get("summary", "")
+        context = await append_timeline_event(
+            property_name=prop_name,
+            flat_no=flat_no,
+            ticket_id=ticket_id or call_id,
+            event_type="vendor_call_end",
+            author="system",
+            description=f"Vendor call ended. Availability: {availability or 'not captured'}",
+            payload={
+                "call_id": call_id,
+                "summary": summary,
+                "vendor_name": vendor_name,
+                "availability": availability,
+            },
+        )
+
+        # Auto-send confirmation email to tenant
+        email_status = "skipped"
+        email_provider_id = None
+        email_error = None
+        if tenant_email and availability:
+            email_subject = "Maintenance update — vendor scheduled"
+            email_body = (
+                f"Hello,\n\n"
+                f"Good news — we've coordinated a vendor for your maintenance request.\n\n"
+                f"Vendor:       {vendor_name}\n"
+                f"Availability: {availability}\n"
+                f"Address:      {prop_name}, flat {flat_no}\n\n"
+                f"They'll attend at the time above. If anything needs to change, just reply to this email.\n\n"
+                f"— HelloTheo property management"
+            )
+            email_result = await send_email(
+                to_email=tenant_email,
+                subject=email_subject,
+                body=email_body,
+            )
+            email_status = email_result.get("status", "unknown")
+            email_provider_id = email_result.get("provider_id")
+            email_error = email_result.get("error")
+        elif not tenant_email:
+            email_error = "no tenant email on file"
+        elif not availability:
+            email_error = "vendor did not capture availability"
+
+        await manager.broadcast(call_id, {
+            "event": "vendor_dispatch_complete",
+            "ticket_id": ticket_id,
+            "vendor_name": vendor_name,
+            "availability": availability,
+            "email_status": email_status,
+            "email_provider_id": email_provider_id,
+            "email_error": email_error,
+            "context": context,
+        })
+
+        # Clean up session
+        active_call_sessions.pop(call_id, None)
+        return {
+            "status": "vendor_dispatch_complete",
+            "ticket_id": ticket_id,
+            "availability": availability,
+            "email_status": email_status,
+            "email_error": email_error,
+        }
+
+    # === BRANCH: tenant inbound call ended (original logic) ===
     session_info = active_call_sessions.pop(call_id, {})
     prop_name = session_info.get("property_name", "Unknown_Property")
     flat_no = session_info.get("flat_no", "Unknown_Flat")
-    
-    # Look up active ticket for this call
+
     async with async_session_maker() as session:
         stmt = select(Ticket).where(Ticket.id == call_id)
         result = await session.execute(stmt)
         ticket = result.scalars().first()
-        
+
         ticket_id = ticket.id if ticket else f"ticket_{int(datetime.utcnow().timestamp())}"
-        
-        # 2. Save transcript to property-unit folder
+
         safe_prop = prop_name.replace(" ", "_").replace("/", "-").lower()
         safe_flat = flat_no.replace(" ", "_").replace("/", "-").lower()
         ticket_dir = os.path.join(CONTEXT_STORE_DIR, "properties", safe_prop, "flats", safe_flat, "tickets", f"ticket_{ticket_id}")
         os.makedirs(ticket_dir, exist_ok=True)
-        
+
         transcript_path = os.path.join(ticket_dir, f"call_{call_id}_transcript.txt")
-        
+
         transcript_text = ""
-        # ElevenLabs sends conversation history in structured formats
         history = payload.get("transcript", payload.get("history", []))
         if isinstance(history, list):
             for message in history:
@@ -296,7 +458,6 @@ async def call_ended(call_id: str, payload: dict):
         async with aiofiles.open(transcript_path, "w", encoding="utf-8") as f:
             await f.write(transcript_text)
 
-        # 3. Append final timeline event
         summary = payload.get("summary", "No call summary provided.")
         context = await append_timeline_event(
             property_name=prop_name,
@@ -307,8 +468,7 @@ async def call_ended(call_id: str, payload: dict):
             description=f"Phone call ended. Summary: {summary}",
             payload={"call_id": call_id, "summary": summary, "transcript_file": f"call_{call_id}_transcript.txt"}
         )
-        
-        # Broadcast finished state to dashboard WebSocket
+
         await manager.broadcast(call_id, {"event": "call_end", "context": context})
 
     return {"status": "processed", "ticket_id": ticket_id}
@@ -557,6 +717,203 @@ async def get_ticket_transcript(ticket_id: str):
     async with aiofiles.open(transcript_path, "r", encoding="utf-8") as f:
         content = await f.read()
         return {"transcript": content}
+
+
+@app.get("/api/vendors")
+async def list_vendors(category: Optional[str] = None):
+    """Return vendors, optionally filtered by category (case-insensitive)."""
+    async with async_session_maker() as session:
+        stmt = select(Vendor)
+        if category:
+            stmt = stmt.where(Vendor.category == category.strip().lower())
+        result = await session.execute(stmt)
+        vendors_list = result.scalars().all()
+        return [
+            {
+                "id": v.id,
+                "name": v.name,
+                "phone": v.phone,
+                "email": v.email,
+                "category": v.category,
+                "zipcode_coverage": v.zipcode_coverage,
+            }
+            for v in vendors_list
+        ]
+
+
+@app.post("/api/tickets/{ticket_id}/dispatch-vendor")
+async def dispatch_vendor(ticket_id: str, payload: dict):
+    """
+    Place an outbound call to a vendor via the ElevenLabs Outbound Calling API
+    (ElevenLabs handles the Twilio leg internally using the linked phone number).
+
+    Body: { "vendor_id": str }
+    """
+    vendor_id = payload.get("vendor_id")
+    if not vendor_id:
+        raise HTTPException(status_code=400, detail="vendor_id is required in body")
+
+    async with async_session_maker() as session:
+        ticket_result = await session.execute(select(Ticket).where(Ticket.id == ticket_id))
+        ticket = ticket_result.scalars().first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
+
+        vendor_result = await session.execute(select(Vendor).where(Vendor.id == vendor_id))
+        vendor = vendor_result.scalars().first()
+        if not vendor:
+            raise HTTPException(status_code=404, detail=f"Vendor {vendor_id} not found")
+
+        prop_result = await session.execute(select(Property).where(Property.id == ticket.property_id))
+        prop = prop_result.scalars().first()
+
+        tenant_email: Optional[str] = None
+        if ticket.tenant_id:
+            tenant_result = await session.execute(select(Tenant).where(Tenant.id == ticket.tenant_id))
+            tenant = tenant_result.scalars().first()
+            if tenant:
+                tenant_email = tenant.email
+
+        # Snapshot ticket fields before we update (used inside the prompt template)
+        prop_name = prop.name if prop else ""
+        ticket_flat = ticket.flat_no
+        ticket_description = ticket.description
+        ticket_category = ticket.issue_category
+        ticket_priority = ticket.priority
+
+        # Patch the ticket to reflect dispatch
+        ticket.vendor_id = vendor_id
+        ticket.status = "DISPATCHED"
+        ticket.updated_at = datetime.utcnow()
+        session.add(ticket)
+        await session.commit()
+
+    # Verify ElevenLabs credentials are loaded
+    agent_id = os.environ.get("ELEVENLABS_AGENT_ID")
+    agent_phone_number_id = os.environ.get("ELEVENLABS_AGENT_PHONE_NUMBER_ID")
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    missing = [
+        name for name, val in [
+            ("ELEVENLABS_AGENT_ID", agent_id),
+            ("ELEVENLABS_AGENT_PHONE_NUMBER_ID", agent_phone_number_id),
+            ("ELEVENLABS_API_KEY", api_key),
+        ] if not val
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Missing ElevenLabs env vars: {', '.join(missing)}",
+        )
+
+    vendor_prompt = (
+        f"You are calling {vendor.name} on behalf of HelloTheo property management. "
+        f"There is a {ticket_category} issue at {prop_name}, flat {ticket_flat}: "
+        f"\"{ticket_description}\" (priority: {ticket_priority}). "
+        f"Greet politely, summarize the issue in one sentence, then ask when they can attend. "
+        f"Once they give a time window, repeat it back to confirm, then call update_master_context "
+        f"with call_id='{ticket_id}', property_name='{prop_name}', flat_no='{ticket_flat}', "
+        f"description='{ticket_description}', issue_category='{ticket_category}', "
+        f"priority='{ticket_priority}', status='DISPATCHED', "
+        f"and next_steps='Vendor availability: <the exact time they gave>'. "
+        f"Be concise — under 90 seconds total."
+    )
+    first_message = (
+        f"Hi, this is HelloTheo property management calling about a {ticket_category} "
+        f"job at {prop_name}. Do you have a quick moment?"
+    )
+
+    body = {
+        "agent_id": agent_id,
+        "agent_phone_number_id": agent_phone_number_id,
+        "to_number": vendor.phone,
+        "conversation_initiation_client_data": {
+            "dynamic_variables": {
+                "call_type": "vendor_dispatch",
+                "ticket_id": ticket_id,
+                "vendor_name": vendor.name,
+                "property_name": prop_name,
+                "flat_no": ticket_flat,
+                "description": ticket_description,
+                "category": ticket_category,
+            },
+            "conversation_config_override": {
+                "agent": {
+                    "prompt": {"prompt": vendor_prompt},
+                    "first_message": first_message,
+                }
+            },
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                "https://api.elevenlabs.io/v1/convai/twilio/outbound-call",
+                headers={"xi-api-key": api_key, "Content-Type": "application/json"},
+                json=body,
+            )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"ElevenLabs request failed: {e}")
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"ElevenLabs returned HTTP {response.status_code}: {response.text}",
+        )
+
+    data = response.json()
+    conversation_id = (
+        data.get("conversation_id")
+        or data.get("callSid")
+        or data.get("call_sid")
+        or data.get("conversation", {}).get("id")
+    )
+
+    # Seed an active session keyed by the conversation_id so the post-call webhook
+    # can identify this as a vendor_dispatch and trigger the tenant email.
+    if conversation_id:
+        active_call_sessions[conversation_id] = {
+            "call_type": "vendor_dispatch",
+            "ticket_id": ticket_id,
+            "vendor_id": vendor_id,
+            "vendor_name": vendor.name,
+            "tenant_email": tenant_email,
+            "property_name": prop_name,
+            "flat_no": ticket_flat,
+        }
+
+    # Log timeline + broadcast to dashboard
+    if prop_name:
+        await append_timeline_event(
+            property_name=prop_name,
+            flat_no=ticket_flat,
+            ticket_id=ticket_id,
+            event_type="vendor_dispatch_start",
+            author="manager",
+            description=f"Outbound call placed to vendor {vendor.name} via ElevenLabs.",
+            payload={
+                "vendor_id": vendor_id,
+                "vendor_phone": vendor.phone,
+                "conversation_id": conversation_id,
+            },
+        )
+
+    await manager.broadcast(ticket_id, {
+        "event": "vendor_dispatch_start",
+        "ticket_id": ticket_id,
+        "vendor_name": vendor.name,
+        "vendor_phone": vendor.phone,
+        "conversation_id": conversation_id,
+    })
+
+    return {
+        "status": "dispatched",
+        "conversation_id": conversation_id,
+        "ticket_id": ticket_id,
+        "vendor_name": vendor.name,
+        "vendor_phone": vendor.phone,
+        "tenant_email": tenant_email,
+    }
 
 
 @app.post("/api/manager/approve")

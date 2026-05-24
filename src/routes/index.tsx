@@ -9,6 +9,7 @@ import {
   type Ticket,
   type Category,
   type Priority,
+  type Status,
 } from "@/lib/tenantops-data";
 import { LiveCallPanel, type LiveCallState } from "@/components/tenantops/LiveCallPanel";
 import { TicketsTable } from "@/components/tenantops/TicketsTable";
@@ -31,15 +32,31 @@ export const Route = createFileRoute("/")({
 
 const IDLE: LiveCallState = { active: false, step: 0 };
 
+const ELEVENLABS_AGENT_ID = "agent_0601ksayj2zhf5dbdq6me1kvs7cf";
+const ELEVENLABS_WIDGET_SCRIPT = "https://unpkg.com/@elevenlabs/convai-widget-embed";
+
 function Index() {
   const [tickets, setTickets] = useState<Ticket[]>(seedTickets);
   const [call, setCall] = useState<LiveCallState>(IDLE);
   const [selected, setSelected] = useState<Ticket | null>(null);
-  const [approval, setApproval] = useState<{ open: boolean; ctx: ApprovalContext | null; ticketId?: string }>({
-    open: false,
-    ctx: null,
-  });
+  const [approval, setApproval] = useState<{
+    open: boolean;
+    ctx: ApprovalContext | null;
+    ticketId?: string;
+    dispatchVendorId?: string;
+  }>({ open: false, ctx: null });
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  // Inject the ElevenLabs Convai widget script once on mount.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (document.querySelector(`script[src="${ELEVENLABS_WIDGET_SCRIPT}"]`)) return;
+    const script = document.createElement("script");
+    script.src = ELEVENLABS_WIDGET_SCRIPT;
+    script.async = true;
+    script.type = "text/javascript";
+    document.body.appendChild(script);
+  }, []);
 
   const clearTimers = () => {
     timers.current.forEach((t) => clearTimeout(t));
@@ -187,6 +204,47 @@ function Index() {
         setCall(IDLE);
         toast.success("Call ended and transcript offloaded.");
         fetchTickets();
+
+        // Auto-open the dispatch approval modal if the agent captured enough context.
+        const ctx = data.context;
+        if (ctx?.ticket_id && ctx?.issue_category) {
+          const catLower = String(ctx.issue_category).toLowerCase();
+          const catCapitalized = catLower.charAt(0).toUpperCase() + catLower.slice(1);
+          const stub: Ticket = {
+            id: ctx.ticket_id,
+            tenantId: "",
+            property: ctx.property_name || "",
+            flat: ctx.flat_no || "",
+            category: catCapitalized as Category,
+            description: ctx.description || "",
+            priority: (ctx.priority || "MEDIUM") as Priority,
+            status: (ctx.status || "NEW") as Status,
+            createdAt: new Date().toISOString(),
+            timeline: [],
+          };
+          // Small delay so the call_end toast settles before the modal animates in.
+          setTimeout(() => openDispatchModal(stub), 600);
+        }
+      } else if (data.event === "vendor_dispatch_start") {
+        toast.info(`Calling ${data.vendor_name}...`, {
+          description: `Outbound call placed via ElevenLabs.`,
+        });
+      } else if (data.event === "vendor_dispatch_complete") {
+        const emailOk = data.email_status === "sent";
+        if (emailOk && data.availability) {
+          toast.success(`Tenant notified — ${data.vendor_name} confirmed`, {
+            description: `Availability: ${data.availability}`,
+          });
+        } else if (data.availability) {
+          toast.warning(`Vendor confirmed but email failed`, {
+            description: data.email_error || "Check Resend logs.",
+          });
+        } else {
+          toast.error(`Vendor call ended without availability`, {
+            description: data.email_error || "No follow-up email sent.",
+          });
+        }
+        fetchTickets();
       }
     };
 
@@ -197,7 +255,7 @@ function Index() {
     return () => {
       ws.close();
     };
-  }, [fetchTickets]);
+  }, []);
 
   const simulate = useCallback(() => {
     if (call.active) return;
@@ -350,11 +408,76 @@ function Index() {
     }
   }
 
+  async function openDispatchModal(ticket: Ticket) {
+    const cat = String(ticket.category || "").toLowerCase();
+    if (!cat) {
+      toast.error("Ticket has no category — set one before dispatching.");
+      return;
+    }
+    try {
+      const res = await fetch(`http://localhost:8000/api/vendors?category=${encodeURIComponent(cat)}`);
+      if (!res.ok) {
+        toast.error("Failed to load vendors from backend.");
+        return;
+      }
+      const list: any[] = await res.json();
+      if (!list.length) {
+        toast.error(`No ${cat} vendors available.`);
+        return;
+      }
+      const v = list[0];
+      const summary = (ticket.description || "").slice(0, 80) || `${cat} issue`;
+      setApproval({
+        open: true,
+        ticketId: ticket.id,
+        dispatchVendorId: v.id,
+        ctx: {
+          tenantName: ticket.tenantDetails?.name || "Tenant",
+          category: String(ticket.category || "Plumbing"),
+          summary,
+          vendorName: v.name,
+          estimate: 180,
+        },
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("Network error fetching vendors.");
+    }
+  }
+
+  async function dispatchVendor(ticketId: string, vendorId: string) {
+    try {
+      const res = await fetch(`http://localhost:8000/api/tickets/${ticketId}/dispatch-vendor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vendor_id: vendorId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(`Outbound call placed to ${data.vendor_name}`, {
+          description: `Conversation ID: ${data.conversation_id ?? "(pending)"}`,
+        });
+        fetchTickets();
+      } else {
+        const text = await res.text();
+        toast.error("Dispatch failed", { description: text });
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to reach backend for dispatch.");
+    }
+  }
+
   const onApprove = async () => {
     const id = approval.ticketId!;
+    const vendorId = approval.dispatchVendorId;
     setApproval({ open: false, ctx: null });
     closeCall();
-    await approveTicket(id);
+    if (vendorId) {
+      await dispatchVendor(id, vendorId);
+    } else {
+      await approveTicket(id);
+    }
   };
 
   const onCancel = async () => {
@@ -420,7 +543,12 @@ function Index() {
         ticket={selected}
         vendor={selectedVendor}
         onClose={() => setSelected(null)}
+        onDispatch={(t) => openDispatchModal(t)}
       />
+
+      {/* ElevenLabs Convai widget — floating mic button, bottom-right. */}
+      {/* @ts-expect-error custom element from @elevenlabs/convai-widget-embed */}
+      <elevenlabs-convai agent-id={ELEVENLABS_AGENT_ID}></elevenlabs-convai>
     </div>
   );
 }

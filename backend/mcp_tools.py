@@ -3,6 +3,7 @@ import json
 import asyncio
 import sys
 import aiofiles
+import httpx
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastmcp import FastMCP
@@ -602,57 +603,123 @@ async def send_notification_email(
         else:
             return f"Error: Invalid recipient type '{recipient_type}'. Must be 'owner', 'tenant', or 'vendor'."
 
+        # Send email via Resend API
+        from_email = os.environ.get("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+        resend_api_key = os.environ.get("RESEND_API_KEY")
+
+        delivery_status = "failed"
+        provider_id: Optional[str] = None
+        error_message: Optional[str] = None
+
+        if not resend_api_key:
+            error_message = "RESEND_API_KEY is not set in environment."
+        else:
+            resend_body: Dict[str, Any] = {
+                "from": from_email,
+                "to": [to_email],
+                "subject": subject,
+                "text": body,
+            }
+            if cc_emails:
+                resend_body["cc"] = cc_emails
+
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    response = await client.post(
+                        "https://api.resend.com/emails",
+                        headers={
+                            "Authorization": f"Bearer {resend_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=resend_body,
+                    )
+                if response.status_code in (200, 202):
+                    delivery_status = "sent"
+                    try:
+                        provider_id = response.json().get("id")
+                    except Exception:
+                        provider_id = None
+                else:
+                    error_message = f"Resend API returned HTTP {response.status_code}: {response.text}"
+            except Exception as e:
+                error_message = f"Resend API request failed: {e}"
+
         # Build email structure for log/audit
         email_payload = {
+            "from": from_email,
             "to": to_email,
             "cc": cc_emails,
             "recipient_name": recipient_name,
             "subject": subject,
             "body": body,
-            "sent_at": datetime.utcnow().isoformat()
+            "sent_at": datetime.utcnow().isoformat(),
+            "delivery_status": delivery_status,
+            "provider_id": provider_id,
+            "error_message": error_message,
         }
-        
+
         # Log to physical files under properties/<prop>/flats/<flat>/tickets/ticket_<id>/
         safe_prop = prop.name.replace(" ", "_").replace("/", "-").lower()
         safe_flat = ticket.flat_no.replace(" ", "_").replace("/", "-").lower()
         ticket_dir = os.path.join(CONTEXT_STORE_DIR, "properties", safe_prop, "flats", safe_flat, "tickets", f"ticket_{ticket_id}")
         os.makedirs(ticket_dir, exist_ok=True)
-        
+
         email_log_filename = f"email_{recipient_type}_{int(datetime.utcnow().timestamp())}.json"
         email_log_path = os.path.join(ticket_dir, email_log_filename)
-        
+
         async with aiofiles.open(email_log_path, "w", encoding="utf-8") as f:
             await f.write(json.dumps(email_payload, indent=2))
-            
+
         # Append timeline event to the master context
         cc_str = f" (CC: {', '.join(cc_emails)})" if cc_emails else ""
-        event_desc = f"AI Agent invoked tool: 'send_notification_email' - Email sent to {recipient_type} {recipient_name} <{to_email}>{cc_str} with subject: '{subject}'"
+        if delivery_status == "sent":
+            event_desc = f"AI Agent invoked tool: 'send_notification_email' - Email sent via Resend to {recipient_type} {recipient_name} <{to_email}>{cc_str} with subject: '{subject}'"
+        else:
+            event_desc = f"AI Agent invoked tool: 'send_notification_email' - Email delivery FAILED to {recipient_type} {recipient_name} <{to_email}>{cc_str}. Reason: {error_message}"
         await append_timeline_event(
             property_name=prop.name,
             flat_no=ticket.flat_no,
             ticket_id=ticket.id,
-            event_type="email_sent",
+            event_type="email_sent" if delivery_status == "sent" else "email_failed",
             author="system",
             description=event_desc,
-            payload={"email_log_file": email_log_filename, "recipient_type": recipient_type}
+            payload={
+                "email_log_file": email_log_filename,
+                "recipient_type": recipient_type,
+                "delivery_status": delivery_status,
+                "provider_id": provider_id,
+                "error_message": error_message,
+            },
         )
 
         # Broadcast the updated timeline to the dashboard WebSocket
         await manager.broadcast(ticket.id, {
-            "event": "email_sent",
-            "email": email_payload
+            "event": "email_sent" if delivery_status == "sent" else "email_failed",
+            "email": email_payload,
         })
 
-        # Print a highly-visible mock email box directly to the console terminal
+        # Print a highly-visible email box directly to the console terminal
         cc_display = ", ".join(cc_emails) if cc_emails else "None"
+        header = (
+            "✉️  EMAIL SENT VIA RESEND (OUTBOUND NOTIFICATION)         "
+            if delivery_status == "sent"
+            else "❌ EMAIL DELIVERY FAILED (RESEND)                         "
+        )
         email_banner = (
             "\n"
             "┌──────────────────────────────────────────────────────────┐\n"
-            "│ ✉️  SIMULATED EMAIL SENT (OUTBOUND NOTIFICATION)          │\n"
+            f"│ {header} │\n"
             "├──────────────────────────────────────────────────────────┤\n"
+            f"│ FROM:    {from_email:<47} │\n"
             f"│ TO:      {to_email:<47} │\n"
             f"│ CC:      {cc_display:<47} │\n"
             f"│ SUBJECT: {subject:<47} │\n"
+        )
+        if delivery_status == "sent" and provider_id:
+            email_banner += f"│ ID:      {provider_id:<47} │\n"
+        if error_message:
+            email_banner += f"│ ERROR:   {error_message[:47]:<47} │\n"
+        email_banner += (
             "├──────────────────────────────────────────────────────────┤\n"
             "│ BODY:                                                    │\n"
         )
@@ -670,10 +737,134 @@ async def send_notification_email(
                     else:
                         current_line += " " + word
             email_banner += f"{current_line:<58}│\n"
-            
+
         email_banner += (
             "└──────────────────────────────────────────────────────────┘\n"
         )
         print(email_banner)
-        
-        return f"Email successfully sent to {to_email}" + (f" (CC'd: {', '.join(cc_emails)})" if cc_emails else "")
+
+        if delivery_status == "sent":
+            return (
+                f"Email successfully sent via Resend to {to_email}"
+                + (f" (CC'd: {', '.join(cc_emails)})" if cc_emails else "")
+                + (f" [id={provider_id}]" if provider_id else "")
+            )
+        else:
+            return f"Error: Failed to send email to {to_email}. {error_message}"
+
+
+@mcp.tool()
+async def lookup_tenant(name: str, call_id: str) -> str:
+    """
+    Look up a tenant by their full or partial name. Use this AS SOON AS the caller
+    introduces themselves by name on an inbound call. The tool fetches the tenant's
+    full profile from our database (email, phone, property address, flat number, owners)
+    and seeds the active call session so subsequent tool calls (update_master_context)
+    automatically have the right property and flat without having to ask the caller.
+
+    Returns a JSON string with the tenant's profile plus an `agent_hint` you should use
+    to confirm the address verbally before continuing.
+    """
+    name_clean = (name or "").strip()
+    if not name_clean:
+        return json.dumps({
+            "status": "error",
+            "error": "name is empty",
+            "agent_hint": "Politely ask the caller to repeat their full name."
+        })
+
+    async with async_session_maker() as session:
+        result = await session.execute(select(Tenant))
+        all_tenants = result.scalars().all()
+        needle = name_clean.lower()
+        matches = [t for t in all_tenants if needle in t.name.lower()]
+
+        if not matches:
+            return json.dumps({
+                "status": "no_match",
+                "name_searched": name_clean,
+                "agent_hint": (
+                    f"No tenant found matching '{name_clean}'. Ask the caller to spell "
+                    "their full name, or ask which property they live at."
+                ),
+            })
+
+        tenant = matches[0]
+
+        flat_stmt = select(Flat).where(Flat.tenant_id == tenant.id)
+        flat_result = await session.execute(flat_stmt)
+        flat = flat_result.scalars().first()
+
+        if not flat:
+            return json.dumps({
+                "status": "found_tenant_no_flat",
+                "tenant_name": tenant.name,
+                "tenant_email": tenant.email,
+                "agent_hint": (
+                    f"Found tenant {tenant.name} but no flat is on file. "
+                    "Ask for property name and flat number."
+                ),
+            })
+
+        prop_stmt = select(Property).where(Property.id == flat.property_id)
+        prop_result = await session.execute(prop_stmt)
+        prop = prop_result.scalars().first()
+
+        owners_list: List[Dict[str, Any]] = []
+        if prop:
+            owner_stmt = (
+                select(Owner)
+                .join(PropertyOwnerLink)
+                .where(PropertyOwnerLink.property_id == prop.id)
+            )
+            owner_result = await session.execute(owner_stmt)
+            for o in owner_result.scalars().all():
+                owners_list.append(
+                    {"id": o.id, "name": o.name, "email": o.email, "phone": o.phone}
+                )
+
+        prop_name = prop.name if prop else None
+        prop_address = prop.address if prop else None
+
+        active_call_sessions[call_id] = {
+            "caller_name": tenant.name,
+            "caller_type": "tenant",
+            "phone": tenant.phone,
+            "tenant_id": tenant.id,
+            "tenant_email": tenant.email,
+            "property_name": prop_name,
+            "flat_no": flat.flat_no,
+            "owners": owners_list,
+        }
+
+        await manager.broadcast(call_id, {
+            "event": "call_start",
+            "call_id": call_id,
+            "caller_name": tenant.name,
+            "caller_type": "tenant",
+            "property_name": prop_name,
+            "flat_no": flat.flat_no,
+        })
+
+        address_line = (
+            f"{prop_name}, {prop_address}, flat {flat.flat_no}"
+            if prop_name and prop_address
+            else f"flat {flat.flat_no}"
+        )
+
+        return json.dumps({
+            "status": "found",
+            "tenant_name": tenant.name,
+            "tenant_email": tenant.email,
+            "tenant_phone": tenant.phone,
+            "property_name": prop_name,
+            "property_address": prop_address,
+            "flat_no": flat.flat_no,
+            "address_line": address_line,
+            "total_matches": len(matches),
+            "agent_hint": (
+                f"Confirm with the caller: 'I see you at {address_line}. Is that correct?' "
+                "Once they confirm, ask them to describe the maintenance issue. "
+                "Then call update_master_context with description, issue_category, and priority."
+            ),
+        })
