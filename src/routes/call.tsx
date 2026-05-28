@@ -88,10 +88,10 @@ function CallPage() {
               className="text-4xl font-bold tracking-tight"
               style={{ color: "#f8fafc" }}
             >
-              HelloTheo
+              PropertyIQ
             </h1>
             <p className="text-sm font-medium mt-1" style={{ color: "#6366f1" }}>
-              Property Maintenance Hotline
+              Property maintenance without the three-week wait.
             </p>
           </div>
         </div>
@@ -102,7 +102,7 @@ function CallPage() {
             className="text-2xl font-semibold mb-3 leading-snug"
             style={{ color: "#e2e8f0" }}
           >
-            Report a maintenance issue in seconds
+            Voice in. Vendor booked. Tenant notified. The whole workflow, end to end.
           </h2>
           <p className="text-base leading-relaxed" style={{ color: "#94a3b8" }}>
             Theo is standing by 24/7. Tap the button in the
@@ -159,34 +159,6 @@ function CallPage() {
               </div>
             ))}
           </div>
-        </div>
-
-        {/* Animated arrow pointing to the widget */}
-        <div className="fixed bottom-32 right-6 pointer-events-none z-10 flex flex-col items-end gap-1">
-          <p
-            className="text-sm font-semibold"
-            style={{ color: "#a5b4fc", textShadow: "0 1px 4px rgba(0,0,0,0.8)" }}
-          >
-            Tap here to call
-          </p>
-          {/* Arrow using pure CSS/SVG pointing down-right */}
-          <svg
-            width="40"
-            height="40"
-            viewBox="0 0 40 40"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-            style={{ filter: "drop-shadow(0 1px 4px rgba(0,0,0,0.8))" }}
-            className="animate-bounce"
-          >
-            <path
-              d="M8 8 L32 32 M18 32 L32 32 L32 18"
-              stroke="#818cf8"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
         </div>
 
         {/* Trust signals footer */}

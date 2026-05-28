@@ -288,13 +288,12 @@ function Index() {
         const emailOk = data.email_status === "sent";
         if (emailOk && data.availability) {
           toast.success(`Email sent to ${data.tenant_email || "tenant"}`, {
-            description: [
-              `Vendor: ${data.vendor_name}`,
-              `Availability: ${data.availability}`,
-              data.email_provider_id ? `Resend id: ${data.email_provider_id}` : null,
-            ]
-              .filter(Boolean)
-              .join("  |  "),
+            description: (
+              <div className="flex flex-col gap-1">
+                <div>Plumber: {data.vendor_name}</div>
+                <div>Availability: {data.availability}</div>
+              </div>
+            ),
             duration: Infinity,
             closeButton: true,
           });

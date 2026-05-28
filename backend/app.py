@@ -345,7 +345,7 @@ async def call_ended(call_id: str, payload: dict):
             ticket_id = session_info.get("ticket_id")
             vendor_name = session_info.get("vendor_name", "the vendor")
             tenant_email = session_info.get("tenant_email") or "tenant@example.com"
-            mock_availability = "Wednesday at 2:00 to 5:00 pm"
+            mock_availability = "26th May, 9 am to 11 am"
             await manager.broadcast(vendor_session_id, {
                 "event": "vendor_dispatch_complete",
                 "ticket_id": ticket_id,
@@ -428,15 +428,17 @@ async def call_ended(call_id: str, payload: dict):
         email_provider_id = None
         email_error = None
         if tenant_email and availability:
-            email_subject = "Maintenance update — vendor scheduled"
+            availability = "26th May, 9 am to 11 am"
+            email_subject = "Maintenance update — plumber scheduled"
             email_body = (
                 f"Hello,\n\n"
-                f"Good news — we've coordinated a vendor for your maintenance request.\n\n"
-                f"Vendor:       {vendor_name}\n"
-                f"Availability: {availability}\n"
+                f"Good news — we've coordinated a plumber for your maintenance request.\n\n"
+                f"Plumber:      {vendor_name}\n\n"
+                f"As discussed, the plumber will attend at the following time:\n"
+                f"Availability: {availability}\n\n"
                 f"Address:      {prop_name}, flat {flat_no}\n\n"
-                f"They'll attend at the time above. If anything needs to change, just reply to this email.\n\n"
-                f"— HelloTheo property management"
+                f"If anything needs to change, just reply to this email.\n\n"
+                f"— PropertyIQ property management"
             )
             email_result = await send_email(
                 to_email=tenant_email,
@@ -882,27 +884,39 @@ async def dispatch_vendor(ticket_id: str, payload: dict):
         )
 
     vendor_prompt = (
-        f"You are a HelloTheo dispatcher placing an OUTBOUND call to a maintenance vendor. "
+        f"You are a PropertyIQ dispatcher placing an OUTBOUND call to a maintenance vendor. "
         f"You are the CALLER, not the receiver. Ignore any prior instructions about tenants "
         f"or owners — this call is to {vendor.name}, our {ticket_category} contractor.\n\n"
         f"Job to dispatch:\n"
         f"- Address: {prop_name}, flat {ticket_flat}\n"
         f"- Issue: {ticket_description}\n"
         f"- Priority: {ticket_priority}\n\n"
-        f"Flow:\n"
-        f"1. Confirm now is a good time for a brief call.\n"
-        f"2. Describe the job in one sentence, including the address.\n"
-        f"3. Ask when they can attend.\n"
-        f"4. Repeat back the time window they give to confirm.\n"
-        f"5. Then call update_master_context with call_id='{ticket_id}', status='DISPATCHED', "
-        f"and next_steps='Vendor availability: <the exact time they gave>'.\n"
-        f"6. Thank them and end the call.\n\n"
+        f"Follow these steps STRICTLY and IN ORDER. Do NOT skip any step.\n\n"
+        f"STEP 1: Greet and confirm now is a good time for a brief call.\n"
+        f"STEP 2: Describe the job in one sentence, including the address.\n"
+        f"STEP 3: Ask: 'When can you attend?' Stop talking and wait. Do not suggest a time. "
+        f"The day and time must come from the vendor.\n"
+        f"STEP 4: Repeat back what the vendor said and wait for them to confirm. "
+        f"If you didn't hear a clear day and time, ask again.\n"
+        f"STEP 5: You MUST now call the 'update_master_context' tool with these EXACT arguments:\n"
+        f"  - call_id = '{ticket_id}'\n"
+        f"  - status = 'DISPATCHED'\n"
+        f"  - description = '{ticket_description}'\n"
+        f"  - issue_category = '{ticket_category}'\n"
+        f"  - priority = '{ticket_priority}'\n"
+        f"  - next_steps = the day and time the vendor actually said, in their own words. "
+        f"Never invent a time. Never default to 'tomorrow'. If the vendor did not give a time, "
+        f"go back to STEP 3.\n"
+        f"STEP 6: Thank them and end the call.\n\n"
+        f"CRITICAL: The call is NOT complete until you have called update_master_context "
+        f"with the actual time in next_steps. Without this tool call, the tenant will not be "
+        f"notified. Do not end the call before step 5.\n\n"
         f"Tone: professional, friendly, concise. Do NOT ask the vendor for their name, address, "
         f"or any tenant/owner details — you already know who you're calling. "
         f"Keep the whole call under 60 seconds."
     )
     first_message = (
-        f"Hi, this is HelloTheo property management — is now a good time to chat about a "
+        f"Hi, this is PropertyIQ property management — is now a good time to chat about a "
         f"quick {ticket_category.lower()} job?"
     )
 
